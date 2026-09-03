@@ -2,7 +2,7 @@
   "name": "com.tbuildtool",
   "version": "1.0.0",
   "displayName": "TBuildTool (Unity Plugin)",
-  "description": "TBuildTool 工程内辅助插件：命令行打包入口（-executeMethod）+ 壁纸构建资源裁剪托管。可由外部打包工具（TBuildTool/web）调用，也可独立用于 CI。",
+  "description": "TBuildTool 工程内辅助插件：命令行打包入口（-executeMethod）+ IBuildProgress 构建进度钩子。可由外部打包工具（TBuildTool/web）调用，也可独立用于 CI。",
   "unity": "6000.0",
   "keywords": [
     "build",
