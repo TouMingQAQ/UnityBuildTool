@@ -1,7 +1,7 @@
 # TBuildTool · 独立构建插件工具
 
 TBuildTool 是独立于游戏工程的**打包构建插件工具**，把「工程内辅助插件」与「外部打包工具」
-统一收编到一个目录，供任意 Unity（6.x）项目复用。本仓库（MiSide 壁纸改造工程）内置了本工具。
+统一收编到一个目录，供任意 Unity（6.x）项目复用。
 
 ```
 TBuildTool/
@@ -40,23 +40,3 @@ TBuildTool/
    本仓库已通过目录联接安装于 `Assets/TBuildTool`。
 2. **外部打包工具**：安装 Node.js 18+，运行 `TBuildTool/web/start.bat`（或
    `node TBuildTool/web/server.js`），浏览器自动打开 http://127.0.0.1:8787 。
-
-## 版本记录（相对原 BuildWeb 的变更）
-
-- 目录 `BuildWeb/` 更名为 `TBuildTool/`（外部打包工具移至 `TBuildTool/web/`）；
-- 工程内辅助插件自 `Assets/MisideWallpaper/Editor/` 独立为 `TBuildTool/unity/`
-  （本工程经 `Assets/TBuildTool` 目录联接挂回）；
-- 命名空间 `MisideWallpaper.Editor` → `TBuildTool.Editor`；
-  `WallpaperBuildCommand` → `BuildCommand`；
-  `-executeMethod` 入口变为 `TBuildTool.Editor.BuildCommand.Build`；
-- 菜单路径 `Tools/MisideWallpaper/...` → `Tools/TBuildTool/...`；
-- 构建流程改为 `IBuildProgress` 钩子驱动：`BuildCommand` 构建前扫描 Editor 下接入该接口的类，
-  按时期执行 `OnBeginBuild` / `OnCancelled` / `OnFinishedBuild`（取代 Unity 全局构建回调，手动构建不执行钩子）；
-- **新增「环境编译检测」**：网页工具新增独立 Tab「环境编译检测」，对用户指定的多条环境线
-  （Win x64/x86 / Android / iOS / macOS）逐条以独立 Unity 批处理进程执行真实编译检测；
-  后端新增 `/api/check/start`、`/api/check/stop`、`/api/check/preview` 与 SSE 事件
-  （`check-start` / `check-target-start` / `check-line` / `check-result` / `check-end`）；
-  工程内插件新增入口 `TBuildTool.Editor.CompileCheck.Run`（`-target` / `-resultFile` / `-timeout` / `-logFile`，
-  注意**不要传 `-quit`**，由插件在编译结束后以退出码收尾：0=通过/不支持，1=失败，2=超时/异常）；
-  检测结果按环境线输出到 `TBuildTool/web/check-results/check-<时间戳>/`（每条环境线一个 JSON + log + 汇总 summary.json）；
-- 其余行为不变：仍由 Build Profile 驱动、不触碰全局 `EditorBuildSettings`（壁纸约束不变）。
