@@ -87,8 +87,6 @@ Build Target 5 / 19 / 13 / 9 / 4）逐条执行一次真实编译检测。
 - `TBuildTool/unity/Editor/CompileCheck.cs`
   环境编译检测入口：单环境线切换目标 + 触发脚本编译并检查错误，结果写入 JSON，
   退出码 0/1/2（详见 `TBuildTool/unity/README.md`；注意调用时**不要传 `-quit`**）。
-- `TBuildTool/unity/Editor/WallpaperResourceStripper.cs`
-  构建前后自动隐藏/还原游戏本体资源（经 `IBuildProgress` 钩子由打包命令驱动），批处理模式下同样生效。
 
 ## 目录结构
 
@@ -115,4 +113,4 @@ TBuildTool/web/
 - **unity CLI 报 EPERM 锁文件错误**：CLI 需要写 `%APPDATA%\UnityHub`，确认该目录可写即可
   （正常桌面环境无此问题，仅部分受限环境会出现）。
 - **找不到 `TBuildTool.Editor.BuildCommand.Build`**：确认工程内辅助插件已安装
-  （`Assets/TBuildTool/Editor/` 存在两个 .cs，见 `TBuildTool/unity/README.md`）。
+  （`Assets/TBuildTool/Editor/` 下的 .cs 文件齐全，见 `TBuildTool/unity/README.md`）。

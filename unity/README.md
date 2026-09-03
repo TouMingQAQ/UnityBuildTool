@@ -1,7 +1,7 @@
 # TBuildTool · 工程内辅助插件（Unity Editor）
 
 本目录是 TBuildTool 的**工程内辅助插件**：安装进 Unity 项目 `Assets/` 后在编辑器侧生效，
-提供命令行打包入口与构建资源裁剪托管。
+提供命令行打包入口与统一的构建进度钩子（`IBuildProgress`）机制。
 
 ## 内容
 
@@ -16,9 +16,6 @@
   退出码 0=通过/不支持、1=失败、2=超时/异常。
 - `Editor/BuildProgress.cs` — 构建进度钩子接口 `IBuildProgress`（+ 上下文 `BuildProgressContext`）：
   `OnBeginBuild`（构建前）/ `OnCancelled`（取消·异常）/ `OnFinishedBuild`（成功·失败）。
-- `Editor/WallpaperResourceStripper.cs` — 壁纸构建资源裁剪托管（实现 `IBuildProgress`）：
-  构建前隐藏游戏本体 `Assets/Resources`（及安卓下的 `StreamingAssets`、Steam 原生插件），
-  构建结束/取消后自动还原；编辑器启动时自动清理残留；菜单 `Tools/TBuildTool/还原 Resources 与 StreamingAssets 文件夹`。
 
 ## 构建进度钩子（IBuildProgress）
 
@@ -35,9 +32,9 @@ Assembly-CSharp-Editor、*.Editor）以及本插件程序集中实现了 `IBuild
 新增钩子：在任意 Editor 文件夹下建一个**无参构造的普通类**实现 `IBuildProgress` 即可，无需注册。
 单个钩子抛异常不影响其他钩子（记录 Warning 后继续）。
 
-> ⚠ 行为变更：资源裁剪不再通过 Unity 全局回调（IPreprocessBuildWithReport /
+> ⚠ 行为变更：构建进度钩子不再通过 Unity 全局构建回调（IPreprocessBuildWithReport /
 > IPostprocessBuildWithReport）自动生效，改为由 TBuildTool 打包时经 `IBuildProgress` 驱动——
-> **编辑器内手动构建不会自动裁剪资源，请一律通过 TBuildTool 打包**。
+> **编辑器内手动构建不会执行钩子，请一律通过 TBuildTool 打包**。
 
 ## 安装方式
 
@@ -62,7 +59,7 @@ New-Item -ItemType Junction -Path "D:\UnityProject\Miside\Assets\TBuildTool" -Ta
 
 ### 2. 拷贝安装（跨机器 / 无联接权限）
 
-将 `Editor/` 文件夹（BuildCommand.cs / CompileCheck.cs / BuildProgress.cs / WallpaperResourceStripper.cs）
+将 `Editor/` 文件夹（BuildCommand.cs / CompileCheck.cs / BuildProgress.cs）
 拷贝到项目 `Assets/TBuildTool/Editor/`。
 
 ### 3. UPM 包引用（可选）
@@ -105,7 +102,6 @@ Unity.exe -batchmode -nographics \
 | 原（BuildWeb 时代） | 现（TBuildTool） |
 |---|---|
 | `MisideWallpaper.Editor.WallpaperBuildCommand.Build` | `TBuildTool.Editor.BuildCommand.Build` |
-| `WallpaperBuildResourceStripper` | `WallpaperResourceStripper` |
 | `Tools/MisideWallpaper/...` 菜单 | `Tools/TBuildTool/...` 菜单 |
 | `Assets/MisideWallpaper/Editor/` | `TBuildTool/unity/Editor/`（经 `Assets/TBuildTool` 联接） |
 | `IPreprocessBuildWithReport / IPostprocessBuildWithReport` 自动回调 | `IBuildProgress` 钩子（BuildCommand 驱动） |

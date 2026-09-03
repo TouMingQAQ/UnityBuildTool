@@ -13,7 +13,6 @@ TBuildTool/
       BuildCommand.cs                  # 命令行打包入口（-executeMethod，驱动 IBuildProgress 钩子）
       CompileCheck.cs                  # 环境编译检测入口（-executeMethod：切换目标平台→触发脚本编译→检查错误）
       BuildProgress.cs                 # IBuildProgress 构建进度钩子接口 + 上下文
-      WallpaperResourceStripper.cs     # 壁纸构建资源裁剪托管（IBuildProgress 实现）
   web/                      # ② 外部打包工具（本地 Web 批量打包器，Node 18+）
     server.js               #   零依赖 Node 后端（HTTP + SSE + 命令执行）
     public/                 #   前端（index.html / app.js / style.css）
@@ -26,7 +25,7 @@ TBuildTool/
 
 | 部分 | 目录 | 职责 | 运行环境 |
 |---|---|---|---|
-| 工程内辅助插件 | `TBuildTool/unity/` | 命令行打包入口（`-executeMethod`）、`IBuildProgress` 构建进度钩子扫描/执行、构建资源裁剪托管 | Unity 编辑器 |
+| 工程内辅助插件 | `TBuildTool/unity/` | 命令行打包入口（`-executeMethod`）、`IBuildProgress` 构建进度钩子扫描/执行 | Unity 编辑器 |
 | 外部打包工具 | `TBuildTool/web/` | 网页界面：扫描 Build Profile → 排队 → 批量调用 Unity 命令行打包 → SSE 实时日志 / 产物归档 | Node.js 18+ |
 
 两者的对接点：外部打包工具以
@@ -48,11 +47,11 @@ TBuildTool/
 - 工程内辅助插件自 `Assets/MisideWallpaper/Editor/` 独立为 `TBuildTool/unity/`
   （本工程经 `Assets/TBuildTool` 目录联接挂回）；
 - 命名空间 `MisideWallpaper.Editor` → `TBuildTool.Editor`；
-  `WallpaperBuildCommand` → `BuildCommand`、`WallpaperBuildResourceStripper` → `WallpaperResourceStripper`；
+  `WallpaperBuildCommand` → `BuildCommand`；
   `-executeMethod` 入口变为 `TBuildTool.Editor.BuildCommand.Build`；
 - 菜单路径 `Tools/MisideWallpaper/...` → `Tools/TBuildTool/...`；
-- 资源裁剪改为 `IBuildProgress` 钩子：`BuildCommand` 构建前扫描 Editor 下接入该接口的类，
-  按时期执行 `OnBeginBuild` / `OnCancelled` / `OnFinishedBuild`（取代 Unity 全局构建回调，手动构建不再自动裁剪）；
+- 构建流程改为 `IBuildProgress` 钩子驱动：`BuildCommand` 构建前扫描 Editor 下接入该接口的类，
+  按时期执行 `OnBeginBuild` / `OnCancelled` / `OnFinishedBuild`（取代 Unity 全局构建回调，手动构建不执行钩子）；
 - **新增「环境编译检测」**：网页工具新增独立 Tab「环境编译检测」，对用户指定的多条环境线
   （Win x64/x86 / Android / iOS / macOS）逐条以独立 Unity 批处理进程执行真实编译检测；
   后端新增 `/api/check/start`、`/api/check/stop`、`/api/check/preview` 与 SSE 事件
@@ -60,5 +59,4 @@ TBuildTool/
   工程内插件新增入口 `TBuildTool.Editor.CompileCheck.Run`（`-target` / `-resultFile` / `-timeout` / `-logFile`，
   注意**不要传 `-quit`**，由插件在编译结束后以退出码收尾：0=通过/不支持，1=失败，2=超时/异常）；
   检测结果按环境线输出到 `TBuildTool/web/check-results/check-<时间戳>/`（每条环境线一个 JSON + log + 汇总 summary.json）；
-- 其余行为不变：仍由 Build Profile 驱动、不触碰全局 `EditorBuildSettings`、
-  构建前后自动隐藏/还原游戏本体资源（壁纸约束不变）。
+- 其余行为不变：仍由 Build Profile 驱动、不触碰全局 `EditorBuildSettings`（壁纸约束不变）。
