@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TBuildTool · MiSide 壁纸 批量构建工具</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- ═════════ 侧边栏 Sidebar ═════════ -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-logo">
+          <svg class="logo-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+        </div>
+        <div class="brand-meta">
+          <div class="brand-title">TBuildTool</div>
+          <div class="brand-sub">MiSide Wallpaper</div>
+        </div>
+      </div>
+
+      <div class="sidebar-status">
+        <div id="liveStatusBadge" class="status-pill idle">
+          <span class="status-dot"></span>
+          <span class="status-text" id="headerStatusText">就绪 · 空闲</span>
+        </div>
+      </div>
+
+      <!-- 侧边导航 Tab -->
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-tab="home">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          <span>构建主页</span>
+          <span class="nav-tag" id="sidebarQueueCount">0</span>
+        </button>
+
+        <button class="nav-item" data-tab="check">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+          <span>环境编译检测</span>
+        </button>
+
+        <button class="nav-item" data-tab="profiles">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+          <span>Profile 与排期</span>
+        </button>
+
+        <button class="nav-item" data-tab="settings">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <span>引擎与高级配置</span>
+        </button>
+
+        <button class="nav-item" data-tab="help">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          <span>帮助与说明</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="btnOpenOutBase" class="btn btn-ghost btn-sidebar-action" title="在资源管理器中打开 Builds 目录">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+          <span>打开输出目录</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ═════════ 主内容区 Main Content ═════════ -->
+    <main class="main-content">
+      
+      <!-- ────────────────── Tab 1: 构建主页 ────────────────── -->
+      <div id="tab-pane-home" class="tab-pane active">
+        <!-- 头部操作与概览卡片 -->
+        <div class="card glass-card hero-console-card">
+          <div class="console-hero-header">
+            <div class="hero-text">
+              <h2>批量构建控制台</h2>
+              <div class="sub-hero" id="homeQueueSummary">当前队列：0 个 Profile</div>
+            </div>
+            <div class="console-action-cluster">
+              <button id="btnStart" class="btn btn-hero-start">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <span>开始批量打包</span>
+              </button>
+              <button id="btnStop" class="btn btn-danger" disabled>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><rect x="6" y="6" width="12" height="12"></rect></svg>
+                <span>停止</span>
+              </button>
+              <button id="btnPreview" class="btn btn-ghost">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                <span>预览命令</span>
+              </button>
+              <button id="btnAi" class="btn btn-ai" disabled title="用 AI 分析最近一次失败原因">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path></svg>
+                <span>AI 失败分析</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="jobSummary" class="job-summary-line"></div>
+          <div id="jobBanner" class="banner hidden"></div>
+
+          <!-- 实时进度条 -->
+          <div id="progressBarWrap" class="progress-wrap hidden">
+            <div class="progress-bar-track">
+              <div id="pbarFill" class="progress-bar-fill" style="width: 0%;"></div>
+            </div>
+            <div class="progress-info-row">
+              <span id="pbarStage" class="stage-text">—</span>
+              <span id="pbarPct" class="pct-text">0%</span>
+            </div>
+          </div>
+
+          <!-- 各 Profile 进度卡片列表 -->
+          <div id="progressArea" class="progress-items-area hidden">
+            <div id="progressList" class="progress-cards-grid"></div>
+          </div>
+        </div>
+
+        <!-- 主页分栏：左侧构建产物，右侧实时日志 -->
+        <div class="home-grid">
+          <!-- 1. 构建成品目录 -->
+          <div class="card glass-card artifacts-card">
+            <div class="card-header">
+              <div class="card-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <h3>构建成品目录</h3>
+              </div>
+              <div class="card-actions">
+                <button id="btnOpenArtifactsDir" class="btn btn-ghost btn-xs" title="在资源管理器中打开 Builds 目录">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                  打开目录
+                </button>
+                <button id="btnRefreshOutputs" class="btn btn-ghost btn-xs" title="重新扫描输出目录">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                  刷新
+                </button>
+              </div>
+            </div>
+            <div class="card-body scrollable-body">
+              <ul id="outputList" class="output-list">
+                <li class="empty-state">暂无构建产物</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 2. ��时终端日志 -->
+          <div class="terminal-box" id="terminalBox">
+            <div class="terminal-head">
+              <div class="terminal-controls">
+                <span class="term-dot term-close"></span>
+                <span class="term-dot term-min"></span>
+                <span class="term-dot term-max"></span>
+                <span class="term-title">实时构建日志 (SSE Stream)</span>
+              </div>
+              <div class="terminal-actions">
+                <div class="term-search-wrap">
+                  <input type="text" id="logSearch" placeholder="搜索日志..." class="term-search-input">
+                </div>
+                <label class="switch-label mini">
+                  <input type="checkbox" id="autoScroll" checked>
+                  <span class="switch-slider"></span>
+                  <span class="switch-text">自动滚动</span>
+                </label>
+                <button id="btnCopyLog" class="btn btn-term-action" title="复制全部日志">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  复制
+                </button>
+                <button id="btnClearLog" class="btn btn-term-action" title="清空日志视图">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  清空
+                </button>
+                <button id="btnExpandLog" class="btn btn-term-action" title="全屏/放大日志">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+                </button>
+              </div>
+            </div>
+            <pre id="logView" class="terminal-body">— 尚未开始构建 —</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- ────────────────── Tab 2: 环境编译检测 ────────────────── -->
+      <div id="tab-pane-check" class="tab-pane">
+        <!-- 检测控制台 Hero -->
+        <div class="card glass-card hero-console-card" style="border-top-color: var(--color-green); background: linear-gradient(180deg, rgba(16, 40, 54, 0.8) 0%, rgba(17, 24, 39, 0.85) 100%);">
+          <div class="console-hero-header">
+            <div class="hero-text">
+              <h2>环境编译检测</h2>
+              <div class="sub-hero" id="checkSummaryLine">对选定的多种环境线尝试真实编译检测（切换目标平台 → 触发脚本编译 → 检查编译错误）</div>
+            </div>
+            <div class="console-action-cluster">
+              <button id="btnCheckStart" class="btn btn-hero-start">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                <span>开始检测</span>
+              </button>
+              <button id="btnCheckStop" class="btn btn-danger" disabled>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><rect x="6" y="6" width="12" height="12"></rect></svg>
+                <span>停止</span>
+              </button>
+              <button id="btnCheckPreview" class="btn btn-ghost">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                <span>预览命令</span>
+              </button>
+              <button id="btnOpenCheckDir" class="btn btn-ghost" title="在资源管理器中打开检测结果目录">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <span>打开结果目录</span>
+              </button>
+            </div>
+          </div>
+          <div id="checkBanner" class="banner hidden"></div>
+          <div id="checkJobSummary" class="job-summary-line"></div>
+        </div>
+
+        <!-- 检测配置（环境线） -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
+              <h3>检测配置 · 环境线选择</h3>
+            </div>
+            <div class="card-actions">
+              <button id="btnCheckUseRepo" class="btn btn-ghost btn-sm" title="填入当前工程路径（..\..）">当前仓库</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="field-grid">
+              <div class="field-group full">
+                <label for="checkProjectPath" class="field-label">
+                  <span>Unity 项目路径</span>
+                  <span class="label-hint">（复用「Profile 与排期」的项目路径）</span>
+                </label>
+                <input type="text" id="checkProjectPath" class="input-text" placeholder="例如 D:\UnityProject\Miside 或 ..\..">
+              </div>
+              <div class="field-row">
+                <div class="field-group" style="flex: 2;">
+                  <label for="checkUnityExe" class="field-label">Unity.exe 路径</label>
+                  <input type="text" id="checkUnityExe" class="input-text" placeholder="G:\Unity Editor\6000.3.8f1\Editor\Unity.exe">
+                </div>
+                <div class="field-group" style="flex: 0.8;">
+                  <label for="checkTimeout" class="field-label">单环境线超时（分钟）</label>
+                  <input type="text" id="checkTimeout" class="input-text" placeholder="20">
+                </div>
+                <div class="field-group" style="flex: 1.2; justify-content: flex-end;">
+                  <label class="switch-label mini" style="margin-top: 22px;">
+                    <input type="checkbox" id="checkNographics" checked>
+                    <span class="switch-slider"></span>
+                    <span class="switch-text">无图形模式 <code>-nographics</code></span>
+                  </label>
+                </div>
+              </div>
+              <div class="field-group full">
+                <label class="field-label">选择要检测的环境线（可多选）：</label>
+                <div class="chips-container" id="checkEnvChips"></div>
+              </div>
+              <div class="field-group full">
+                <div class="modal-hint-box" style="margin-top: 0;">
+                  💡 每条环境线会以独立的 Unity 批处理进程执行一次「<strong>切换目标平台 → 触发脚本重编译 → 检查编译错误</strong>」。
+                  在 Windows 主机上，iOS / macOS 通常会被标记为 <strong>「不支持」</strong>（需对应主机与平台模块），属于正常环境判定而非编译失败。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 检测结果 -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+              <h3>检测结果</h3>
+            </div>
+            <div class="card-actions">
+              <span class="counter-badge" id="checkResultCount">共 0 条环境线</span>
+              <button id="btnClearCheckResults" class="btn btn-ghost btn-xs" title="清空当前结果列表">清空结果</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <ul id="checkResultList" class="check-results-list">
+              <li class="empty-state">尚未运行环境编译检测。请选择环境线并点击「开始检测」。</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- 检测日志 -->
+        <div class="terminal-box" id="checkTerminalBox">
+          <div class="terminal-head">
+            <div class="terminal-controls">
+              <span class="term-dot term-close"></span>
+              <span class="term-dot term-min"></span>
+              <span class="term-dot term-max"></span>
+              <span class="term-title">环境检测实时日志</span>
+            </div>
+            <div class="terminal-actions">
+              <div class="term-search-wrap">
+                <input type="text" id="checkLogSearch" placeholder="搜索日志..." class="term-search-input">
+              </div>
+              <label class="switch-label mini">
+                <input type="checkbox" id="checkAutoScroll" checked>
+                <span class="switch-slider"></span>
+                <span class="switch-text">自动滚动</span>
+              </label>
+              <button id="btnCopyCheckLog" class="btn btn-term-action" title="复制全部日志">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                复制
+              </button>
+              <button id="btnClearCheckLog" class="btn btn-term-action" title="清空日志视图">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                清空
+              </button>
+              <button id="btnExpandCheckLog" class="btn btn-term-action" title="全屏/放大日志">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+              </button>
+            </div>
+          </div>
+          <pre id="checkLogView" class="terminal-body">— 尚未运行环境编译检测 —</pre>
+        </div>
+      </div>
+
+      <!-- ────────────────── Tab 3: Profile 与排期 ────────────────── -->
+      <div id="tab-pane-profiles" class="tab-pane">
+        <!-- 1. 项目配置 -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+              <h3>Unity 项目与 Profile 扫描</h3>
+            </div>
+            <div class="card-actions">
+              <button id="btnUseRepo" class="btn btn-ghost btn-sm" title="填入当前工程路径（..\..）">当前仓库</button>
+              <button id="btnCliOpen" class="btn btn-ghost btn-sm" title="用 unity CLI 打开该项目">CLI 打开项目</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="field-grid">
+              <div class="field-group full">
+                <label for="projectPath" class="field-label">
+                  <span>Unity 项目路径</span>
+                  <span class="label-hint">（绝对路径或基于 TBuildTool\web 的相对路径）</span>
+                </label>
+                <div class="input-action-wrap">
+                  <input type="text" id="projectPath" class="input-text" placeholder="例如 D:\UnityProject\Miside 或 ..\..">
+                  <button id="btnScan" class="btn btn-primary">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    扫描 Profile
+                  </button>
+                </div>
+              </div>
+
+              <div class="field-group full">
+                <label for="profileDir" class="field-label">
+                  <span>Profile 目录</span>
+                  <span class="label-hint">（默认 Assets/Settings/Build Profiles）</span>
+                </label>
+                <input type="text" id="profileDir" class="input-text" placeholder="Assets/Settings/Build Profiles">
+              </div>
+            </div>
+
+            <div id="projectInfo" class="info-banner hidden"></div>
+          </div>
+        </div>
+
+        <!-- 2. Profile 选择与排期队列 -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line></svg>
+              <h3>Profile 列表与排期队列</h3>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="pipeline-split">
+              <!-- 左侧：扫描出的 Profile 列表 -->
+              <div class="pipeline-col">
+                <div class="section-toolbar">
+                  <div class="filter-group" id="filterChips">
+                    <button data-f="all" class="chip active">全部</button>
+                    <button data-f="android" class="chip chip-android">仅 Android</button>
+                    <button data-f="win" class="chip chip-win">仅 Windows</button>
+                    <button data-f="ios" class="chip chip-ios">仅 iOS</button>
+                  </div>
+                  <span class="sub-hint">点击「添加」排入右侧构建队列</span>
+                </div>
+
+                <div class="table-container">
+                  <table id="profileTable" class="modern-table">
+                    <thead>
+                      <tr>
+                        <th>名称 / 路径</th>
+                        <th style="width: 100px;">平台</th>
+                        <th style="width: 60px;">场景</th>
+                        <th style="width: 80px; text-align: right;">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="profileBody">
+                      <tr><td colspan="4" class="empty-state">请先在上方配置项目路径并点击「扫描 Profile」</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div id="ignoredInfo" class="ignored-banner"></div>
+              </div>
+
+              <!-- 右侧：打包队列 -->
+              <div class="pipeline-col">
+                <div class="panel-box">
+                  <div class="panel-box-head">
+                    <div class="panel-title">
+                      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                      <span>构建执行队列（自上而下）</span>
+                    </div>
+                    <span class="counter-badge" id="queueCount">共 0 个</span>
+                  </div>
+                  <ul id="queueList" class="queue-list">
+                    <li class="empty-state">队列为空，请从左侧添加 Profile</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ────────────────── Tab 3: 引擎与配置 ────────────────── -->
+      <div id="tab-pane-settings" class="tab-pane">
+        <!-- 引擎模式 -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+              <h3>打包引擎选择</h3>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="segmented-control">
+              <label class="segment-option">
+                <input type="radio" name="engineMode" value="batchmode" checked>
+                <span class="segment-content">
+                  <strong>Unity 批处理模式</strong>
+                  <small>Unity.exe -batchmode（稳定推荐，多场景与资源剥离正常）</small>
+                </span>
+              </label>
+              <label class="segment-option">
+                <input type="radio" name="engineMode" value="template">
+                <span class="segment-content">
+                  <strong>自定义命令模板</strong>
+                  <small>自定义 CLI 指令 / 任意包装脚本</small>
+                </span>
+              </label>
+            </div>
+
+            <!-- 批处理模式配置面板 -->
+            <div id="panel-batchmode" class="engine-panel">
+              <div class="field-grid">
+                <div class="field-group full">
+                  <label for="unityExe" class="field-label">Unity.exe 路径</label>
+                  <div class="input-action-wrap">
+                    <select id="unityExeSel" class="input-select" style="max-width: 280px;"></select>
+                    <input type="text" id="unityExe" class="input-text" placeholder="G:\Unity Editor\6000.3.8f1\Editor\Unity.exe">
+                    <button id="btnDetect" class="btn btn-ghost btn-sm">自动探测</button>
+                    <button id="btnCliProbe" class="btn btn-ghost btn-sm">CLI 探测</button>
+                  </div>
+                </div>
+                <div class="field-group full">
+                  <label class="switch-label">
+                    <input type="checkbox" id="nographics" checked>
+                    <span class="switch-slider"></span>
+                    <span class="switch-text">无图形模式 <code>-nographics</code>（无头极速构建）</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- 自定义模板配置面板 -->
+            <div id="panel-template" class="engine-panel hidden">
+              <div class="field-grid">
+                <div class="field-group full">
+                  <label for="cliPath" class="field-label">CLI 可执行文件路径</label>
+                  <input type="text" id="cliPath" class="input-text" placeholder="C:\Users\TouMing\AppData\Local\Unity\bin\unity.exe">
+                </div>
+                <div class="field-group full">
+                  <label for="template" class="field-label">命令模板</label>
+                  <textarea id="template" class="input-textarea" rows="3" spellcheck="false"
+                    placeholder="例如：{cli} project build --project {project} --profile {profilePath} --output {output}"></textarea>
+                </div>
+                <div class="field-group full">
+                  <span class="field-label">可用占位符快捷插入：</span>
+                  <div class="chips-container">
+                    <button class="chip chip-param" data-insert="{cli}">{cli}</button>
+                    <button class="chip chip-param" data-insert="{project}">{project}</button>
+                    <button class="chip chip-param" data-insert="{profilePath}">{profilePath}</button>
+                    <button class="chip chip-param" data-insert="{profileAbs}">{profileAbs}</button>
+                    <button class="chip chip-param" data-insert="{profileName}">{profileName}</button>
+                    <button class="chip chip-param" data-insert="{target}">{target}</button>
+                    <button class="chip chip-param" data-insert="{output}">{output}</button>
+                    <button class="chip chip-param" data-insert="{logFile}">{logFile}</button>
+                    <button class="chip chip-param" data-insert="{dev}">{dev}</button>
+                    <button class="chip chip-param" data-insert="{buildAddressables}">{buildAddressables}</button>
+                    <button class="chip chip-param" data-insert="{keystorePass}">{keystorePass}</button>
+                    <button class="chip chip-param" data-insert="{keyaliasPass}">{keyaliasPass}</button>
+                    <button class="chip chip-param" data-insert="{keystoreName}">{keystoreName}</button>
+                    <button class="chip chip-param" data-insert="{keyaliasName}">{keyaliasName}</button>
+                    <button class="chip chip-param" data-insert="{unityExe}">{unityExe}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 全局构建选项与成品命名规则 -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+              <h3>全局构建策略与成品命名</h3>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="field-grid">
+              <div class="field-group full">
+                <label for="artifactNameTemplate" class="field-label">
+                  <span>默认成品命名规则模板</span>
+                  <span class="label-hint">（支持字符串替换，每个 Profile 可单独覆盖）</span>
+                </label>
+                <input type="text" id="artifactNameTemplate" class="input-text" placeholder="{Product}_{Platform}_v{Version}_b{VersionCode}_{Time}{Dev}">
+                <div class="chips-container" style="margin-top: 4px;">
+                  <button class="chip chip-param" data-insert-name="{Platform}">{Platform} 平台</button>
+                  <button class="chip chip-param" data-insert-name="{Product}">{Product} 产品名</button>
+                  <button class="chip chip-param" data-insert-name="{Profile}">{Profile} Profile名</button>
+                  <button class="chip chip-param" data-insert-name="{Version}">{Version} 版本号</button>
+                  <button class="chip chip-param" data-insert-name="{VersionCode}">{VersionCode} 构建号</button>
+                  <button class="chip chip-param" data-insert-name="{Time}">{Time} 时间戳</button>
+                  <button class="chip chip-param" data-insert-name="{Date}">{Date} 日期</button>
+                  <button class="chip chip-param" data-insert-name="{Dev}">{Dev} DEV后缀</button>
+                </div>
+              </div>
+
+              <div class="field-row">
+                <div class="field-group" style="flex: 1;">
+                  <label for="outputBase" class="field-label-sm">输出根目录</label>
+                  <input type="text" id="outputBase" class="input-text input-sm" placeholder="Builds">
+                </div>
+                <div class="field-group" style="flex: 1;">
+                  <label for="successDir" class="field-label-sm">成功归档子目录</label>
+                  <input type="text" id="successDir" class="input-text input-sm" placeholder="构建成功">
+                </div>
+                <div class="field-group" style="flex: 0.8;">
+                  <label for="buildNumber" class="field-label-sm">安卓构建号</label>
+                  <input type="text" id="buildNumber" class="input-text input-sm" placeholder="-1 (-1自增)">
+                </div>
+              </div>
+
+              <div class="field-row" style="margin-top: 8px; gap: 20px;">
+                <label class="switch-label mini">
+                  <input type="checkbox" id="defaultAutoZip" checked>
+                  <span class="switch-slider"></span>
+                  <span class="switch-text">自动压缩为 ZIP 归档（Windows / iOS）</span>
+                </label>
+                <label class="switch-label mini">
+                  <input type="checkbox" id="defaultDevBuild">
+                  <span class="switch-slider"></span>
+                  <span class="switch-text">全局默认开启 DEV (Development Build)</span>
+                </label>
+                <label class="switch-label mini">
+                  <input type="checkbox" id="defaultBuildAddressables">
+                  <span class="switch-slider"></span>
+                  <span class="switch-text">全局默认构建 Addressables 资源包</span>
+                </label>
+                <label class="switch-label mini">
+                  <input type="checkbox" id="stopOnError" checked>
+                  <span class="switch-slider"></span>
+                  <span class="switch-text">失败即停</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 高级子配置网格 (网络代理 + AI 分析) -->
+        <div class="sub-cards-grid">
+          <!-- 1. 网络代理 -->
+          <div class="sub-config-card glass-card">
+            <div class="sub-card-head">
+              <div class="sub-card-title">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                <span>网络代理</span>
+              </div>
+              <label class="switch-label mini">
+                <input type="checkbox" id="proxyEnabled">
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用</span>
+              </label>
+            </div>
+            <div class="sub-card-body">
+              <div class="field-row">
+                <div class="field-group" style="flex: 2;">
+                  <label for="proxyHost" class="field-label-sm">代理地址</label>
+                  <input type="text" id="proxyHost" class="input-text input-sm" placeholder="127.0.0.1">
+                </div>
+                <div class="field-group" style="flex: 1;">
+                  <label for="proxyPort" class="field-label-sm">端口</label>
+                  <input type="text" id="proxyPort" class="input-text input-sm" placeholder="10808">
+                </div>
+              </div>
+              <span class="hint-text">安卓构建下载 Gradle / AGP 依赖加速</span>
+            </div>
+          </div>
+
+          <!-- 2. AI 失败诊断 -->
+          <div class="sub-config-card glass-card">
+            <div class="sub-card-head">
+              <div class="sub-card-title">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path></svg>
+                <span>AI 失败智能诊断</span>
+              </div>
+              <label class="switch-label mini">
+                <input type="checkbox" id="aiEnabled">
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用</span>
+              </label>
+            </div>
+            <div class="sub-card-body">
+              <div class="field-row">
+                <div class="field-group" style="flex: 2;">
+                  <label for="aiBaseUrl" class="field-label-sm">接口地址</label>
+                  <input type="text" id="aiBaseUrl" class="input-text input-sm" placeholder="https://api.deepseek.com">
+                </div>
+                <div class="field-group" style="flex: 1.2;">
+                  <label for="aiModel" class="field-label-sm">模型</label>
+                  <input type="text" id="aiModel" class="input-text input-sm" placeholder="deepseek-chat">
+                </div>
+              </div>
+              <div class="field-group" style="margin-top: 6px;">
+                <label for="aiApiKey" class="field-label-sm">API Key</label>
+                <div class="password-wrap">
+                  <input type="password" id="aiApiKey" class="input-text input-sm" placeholder="sk-...">
+                  <button type="button" class="btn-toggle-eye" data-target="aiApiKey" title="显示/隐藏密码">👁</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ────────────────── Tab 4: 帮助与说明 ────────────────── -->
+      <div id="tab-pane-help" class="tab-pane">
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
+              <h3>TBuildTool · 使用指南与构建原理</h3>
+            </div>
+          </div>
+          <div class="card-body help-body">
+            <h4>💡 构建工作流说明</h4>
+            <p>1. 在 <strong>Profile 与排期</strong> 页面设置项目根路径并点击「扫描 Profile」。</p>
+            <p>2. 点击「＋ 添加」将需打包的目标加入队列（支持 Windows、Android、iOS）。</p>
+            <p>3. 点击队列项中的「⚙ 高级配置」，可单独配置<strong>构建缓存目录</strong>、<strong>成品命名规则</strong>、<strong>Addressables 构建</strong>、<strong>DEV 调试包</strong>及<strong>安卓 Keystore 签名</strong>。</p>
+            <p>4. 在 <strong>构建主页</strong> 随时点击「开始批量打包」，实时监控阶段与日志输出。</p>
+            
+            <h4 style="margin-top: 16px;">📦 产物归档与平台特性</h4>
+            <p>• <strong>共享��建缓存</strong>：多个 Profile 可指定相同构建目录（如 <code>Builds/SharedCache</code>），共享 IL2CPP、Burst 与 Shader 编译缓存，大幅加速批量构建。</p>
+            <p>• <strong>自定义命名替换规则</strong>：支持 <code>{Platform}</code>、<code>{Product}</code>、<code>{Profile}</code>、<code>{Version}</code>、<code>{VersionCode}</code>、<code>{Time}</code>、<code>{Date}</code>、<code>{Dev}</code> 等宏占位符。</p>
+            <p>• <strong>iOS Xcode 自动压缩</strong>：iOS 目标导出 Xcode 工程后，自动打包为包含完整工程的 <code>.zip</code> 归档。</p>
+            <p>• <strong>Windows 自动压缩</strong>：Windows 构建包构建完成后自动打包为标准 <code>.zip</code> 归档包。</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ═════════ 弹窗 Modals ═════════ -->
+
+  <!-- 1. 命令预览弹窗 -->
+  <div id="previewModal" class="modal-backdrop hidden">
+    <div class="modal-dialog glass-modal">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+          <h3>命令行预览</h3>
+        </div>
+        <button class="modal-close" id="btnClosePreviewTop">&times;</button>
+      </div>
+      <div class="modal-content">
+        <div id="previewList" class="cmd-preview-container"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCopyPreview" class="btn btn-ghost">复制全部命令</button>
+        <button id="btnClosePreview" class="btn btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Profile 独立定制与签名配置弹窗 -->
+  <div id="profileCfgModal" class="modal-backdrop hidden">
+    <div class="modal-dialog glass-modal modal-lg">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <h3 id="profileCfgTitle">节点构建定制与平��配置</h3>
+        </div>
+        <button class="modal-close" id="btnCancelProfileCfgTop">&times;</button>
+      </div>
+      <div class="modal-content" id="profileCfgBody">
+        <!-- 基础通用定制 -->
+        <div class="modal-section-title">📁 缓存与成品命名定制</div>
+        <div class="field-grid">
+          <div class="field-group full">
+            <label for="pcCustomBuildDir" class="field-label">
+              <span>构建缓存/工作目录</span>
+              <span class="label-hint">（可指定如 <code>Builds/SharedCache</code> 供多 Profile 共享编译缓存；留空默认独立目录）</span>
+            </label>
+            <input type="text" id="pcCustomBuildDir" class="input-text" placeholder="留空默认 Builds/{ProfileName}">
+          </div>
+          <div class="field-group full">
+            <label for="pcNameTemplate" class="field-label">
+              <span>成品归档命名规则</span>
+              <span class="label-hint">（留空则继承全局设置，如 <code>Android-{Time}-{Version}-{VersionCode}</code>）</span>
+            </label>
+            <input type="text" id="pcNameTemplate" class="input-text" placeholder="继承全局设置：{Product}_{Platform}_v{Version}_b{VersionCode}_{Time}{Dev}">
+            <div class="chips-container" style="margin-top: 4px;">
+              <button class="chip chip-param" data-insert-pcname="{Platform}">{Platform}</button>
+              <button class="chip chip-param" data-insert-pcname="{Product}">{Product}</button>
+              <button class="chip chip-param" data-insert-pcname="{Profile}">{Profile}</button>
+              <button class="chip chip-param" data-insert-pcname="{Version}">{Version}</button>
+              <button class="chip chip-param" data-insert-pcname="{VersionCode}">{VersionCode}</button>
+              <button class="chip chip-param" data-insert-pcname="{Time}">{Time}</button>
+              <button class="chip chip-param" data-insert-pcname="{Date}">{Date}</button>
+              <button class="chip chip-param" data-insert-pcname="{Dev}">{Dev}</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 选项开关 -->
+        <div class="modal-section-title" style="margin-top: 14px;">🛠️ 高级构建选项</div>
+        <div class="field-grid">
+          <div class="field-row" style="gap: 16px;">
+            <label class="switch-label">
+              <input type="checkbox" id="pcAutoZip" checked>
+              <span class="switch-slider"></span>
+              <span class="switch-text">🗜️ 自动压缩为 ZIP（关闭则保留解压目录直接运行）</span>
+            </label>
+            <label class="switch-label">
+              <input type="checkbox" id="pcDev">
+              <span class="switch-slider"></span>
+              <span class="switch-text">🐞 开启 DEV (Development Build)</span>
+            </label>
+            <label class="switch-label">
+              <input type="checkbox" id="pcBuildAddressables">
+              <span class="switch-slider"></span>
+              <span class="switch-text">📦 构建 Addressables 资源包</span>
+            </label>
+          </div>
+          <div class="field-group full" id="pcAddrMethodGroup">
+            <label for="pcAddressablesMethod" class="field-label">
+              <span>自定义 Addressables 构建函数（可选）</span>
+              <span class="label-hint">（留空则默认 AddressableAssetSettings.BuildPlayerContent）</span>
+            </label>
+            <input type="text" id="pcAddressablesMethod" class="input-text input-sm" placeholder="例如：MyTools.AddressableBuilder.BuildContent">
+          </div>
+        </div>
+
+        <!-- 平台专属区域 -->
+        <div class="modal-section-title" style="margin-top: 14px;" id="pcPlatformTitle">📱 平台专属设置</div>
+        
+        <!-- Android 专属 -->
+        <div id="pcAndroidBox" class="field-grid">
+          <div class="field-group full">
+            <label for="pcKeystoreName" class="field-label">Keystore 签名文件路径</label>
+            <input type="text" id="pcKeystoreName" class="input-text" placeholder="KeyStore/user.keystore（相对项目根目录）">
+          </div>
+          <div class="field-group full">
+            <label for="pcAlias" class="field-label">Key 别名 (Alias)</label>
+            <input type="text" id="pcAlias" class="input-text" placeholder="key">
+          </div>
+          <div class="field-row">
+            <div class="field-group" style="flex: 1;">
+              <label for="pcPass" class="field-label">Keystore 密码</label>
+              <div class="password-wrap">
+                <input type="password" id="pcPass" class="input-text" placeholder="仅安卓构建需要">
+                <button type="button" class="btn-toggle-eye" data-target="pcPass" title="显示/隐藏密码">👁</button>
+              </div>
+            </div>
+            <div class="field-group" style="flex: 1;">
+              <label for="pcKeyPass" class="field-label">Key 密码</label>
+              <div class="password-wrap">
+                <input type="password" id="pcKeyPass" class="input-text" placeholder="留空则同 Keystore 密码">
+                <button type="button" class="btn-toggle-eye" data-target="pcKeyPass" title="显示/隐藏密码">👁</button>
+              </div>
+            </div>
+          </div>
+          <div class="field-group full">
+            <label class="switch-label">
+              <input type="checkbox" id="pcRemember">
+              <span class="switch-slider"></span>
+              <span class="switch-text">记住密码（保存到本地 config.json，避免重复输入）</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- iOS 专属 -->
+        <div id="pcIosBox" class="field-grid hidden">
+          <div class="modal-hint-box" style="margin-top: 0;">
+            🍎 <strong>iOS 目标特性</strong>：构建输出为完整 Xcode 工程目录。TBuildTool 构建完成后会自动将其压缩为 ZIP 归档，并按上方命名规则重命名。
+          </div>
+        </div>
+
+        <!-- Windows 专属 -->
+        <div id="pcWinBox" class="field-grid hidden">
+          <div class="modal-hint-box" style="margin-top: 0;">
+            🪟 <strong>Windows 目标特性</strong>：构建输出为 exe 及其配套数据。构建完成后将自动整包压缩为 ZIP 归档。
+          </div>
+        </div>
+
+        <div id="pcHint" class="modal-hint-box"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="pcCancel" class="btn btn-ghost">取消</button>
+        <button id="pcSave" class="btn btn-primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. AI 诊断弹窗 -->
+  <div id="aiModal" class="modal-backdrop hidden">
+    <div class="modal-dialog glass-modal modal-lg">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path></svg>
+          <h3>AI 失败智能诊断分析</h3>
+        </div>
+        <button class="modal-close" id="btnAiCloseTop">&times;</button>
+      </div>
+      <div class="modal-content">
+        <div id="aiResult" class="ai-result-view">分析中…</div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCopyAi" class="btn btn-ghost">复制分析结果</button>
+        <button id="aiClose" class="btn btn-primary">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 全局 Toast 提示容器 -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
