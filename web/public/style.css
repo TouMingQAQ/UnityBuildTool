@@ -141,12 +141,6 @@ body {
   color: #ffffff;
 }
 
-.brand-meta .brand-sub {
-  font-size: 11px;
-  color: var(--accent-primary);
-  font-weight: 600;
-}
-
 .sidebar-status {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border-subtle);

@@ -1665,7 +1665,7 @@ const server = http.createServer(async (req, res) => {
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log('====================================================');
-    console.log('  TBuildTool · MiSide 壁纸 本地批量打包工具');
+    console.log('  TBuildTool · 本地批量打包工具');
     console.log(`  地址: http://${HOST}:${PORT}`);
     console.log('  关闭窗口即停止服务');
     console.log('====================================================');
