@@ -46,6 +46,11 @@
           <span>环境编译检测</span>
         </button>
 
+        <button class="nav-item" data-tab="vcs">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
+          <span>版本管理</span>
+        </button>
+
         <button class="nav-item" data-tab="profiles">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
           <span>Profile 与排期</span>
@@ -322,7 +327,94 @@
         </div>
       </div>
 
-      <!-- ────────────────── Tab 3: Profile 与排期 ────────────────── -->
+      <!-- ────────────────── Tab 3: 版本管理 ────────────────── -->
+      <div id="tab-pane-vcs" class="tab-pane">
+        <!-- Hero 控制台 -->
+        <div class="card glass-card hero-console-card" style="border-top-color: var(--color-green); background: linear-gradient(180deg, rgba(16, 40, 54, 0.8) 0%, rgba(17, 24, 39, 0.85) 100%);">
+          <div class="console-hero-header">
+            <div class="hero-text">
+              <h2>版本管理</h2>
+              <div class="sub-hero" id="vcsSummaryLine">SVN / Git 节点 · 分组管理 · 一键更新（更新前自动还原未提交更改）</div>
+            </div>
+            <div class="console-action-cluster">
+              <button id="btnVcsAddNode" class="btn btn-hero-start">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                <span>添加节点</span>
+              </button>
+              <button id="btnVcsUpdateAll" class="btn btn-primary">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                <span>更新全部节点</span>
+              </button>
+              <button id="btnVcsProbe" class="btn btn-ghost">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <span>刷新状态</span>
+              </button>
+              <button id="btnVcsStop" class="btn btn-danger" disabled>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><rect x="6" y="6" width="12" height="12"></rect></svg>
+                <span>停止</span>
+              </button>
+            </div>
+          </div>
+          <div id="vcsBanner" class="banner hidden"></div>
+          <div id="vcsJobSummary" class="job-summary-line"></div>
+        </div>
+
+        <!-- 未分组节点（拖入分组卡片 = 归组；拖回此区域 = 移出分组） -->
+        <div class="card glass-card" id="vcsUngroupedCard">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
+              <h3>未分组节点</h3>
+              <span class="counter-badge" id="vcsUngroupedCount">0</span>
+            </div>
+            <div class="card-actions">
+              <span class="sub-hint">拖动节点卡片到下方分组即可归组</span>
+              <button id="btnVcsAddGroup" class="btn btn-ghost btn-sm">＋ 新建分组</button>
+            </div>
+          </div>
+          <div class="card-body" id="vcsUngroupedArea"></div>
+        </div>
+
+        <!-- 分组网格 -->
+        <div id="vcsGroupsArea" class="vcs-groups-grid"></div>
+        <div id="vcsEmptyHint" class="empty-state hidden">暂无分组 · 点击「新建分组」创建，或直接拖动节点卡片的 ⠿ 手柄归组</div>
+
+        <!-- 更新日志 -->
+        <div class="terminal-box" id="vcsTerminalBox">
+          <div class="terminal-head">
+            <div class="terminal-controls">
+              <span class="term-dot term-close"></span>
+              <span class="term-dot term-min"></span>
+              <span class="term-dot term-max"></span>
+              <span class="term-title">版本管理实时日志</span>
+            </div>
+            <div class="terminal-actions">
+              <div class="term-search-wrap">
+                <input type="text" id="vcsLogSearch" placeholder="搜索日志..." class="term-search-input">
+              </div>
+              <label class="switch-label mini">
+                <input type="checkbox" id="vcsAutoScroll" checked>
+                <span class="switch-slider"></span>
+                <span class="switch-text">自动滚动</span>
+              </label>
+              <button id="btnCopyVcsLog" class="btn btn-term-action" title="复制全部日志">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                复制
+              </button>
+              <button id="btnClearVcsLog" class="btn btn-term-action" title="清空日志视图">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                清空
+              </button>
+              <button id="btnExpandVcsLog" class="btn btn-term-action" title="全屏/放大日志">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+              </button>
+            </div>
+          </div>
+          <pre id="vcsLogView" class="terminal-body">— 尚未执行版本管理更新 —</pre>
+        </div>
+      </div>
+
+      <!-- ────────────────── Tab 4: Profile 与排期 ────────────────── -->
       <div id="tab-pane-profiles" class="tab-pane">
         <!-- 1. 项目配置 -->
         <div class="card glass-card">
@@ -826,7 +918,58 @@
     </div>
   </div>
 
-  <!-- 3. AI 诊断弹窗 -->
+  <!-- 3. 版本管理节点弹窗 -->
+  <div id="vcsNodeModal" class="modal-backdrop hidden">
+    <div class="modal-dialog glass-modal">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
+          <h3 id="vcsNodeModalTitle">添加版本管理节点</h3>
+        </div>
+        <button class="modal-close" id="btnVcsNodeCloseTop">&times;</button>
+      </div>
+      <div class="modal-content">
+        <div class="field-grid">
+          <div class="field-group full">
+            <label for="vcsNodeName" class="field-label">节点名称</label>
+            <input type="text" id="vcsNodeName" class="input-text" placeholder="例如 GameClient / Art 资源库">
+          </div>
+          <div class="field-group full">
+            <label for="vcsNodePath" class="field-label">
+              <span>本地路径</span>
+              <span class="label-hint">（绝对路径，或基于 TBuildTool\web 的相对路径；默认留空）</span>
+            </label>
+            <div class="input-action-wrap">
+              <input type="text" id="vcsNodePath" class="input-text" placeholder="例如 D:\UnityProject\Miside 或 ..\..">
+              <button id="btnVcsNodeProbe" class="btn btn-ghost btn-sm">检测类型</button>
+            </div>
+            <div id="vcsNodeProbeResult" class="vcs-probe-result"></div>
+          </div>
+          <div class="field-group full">
+            <label for="vcsNodeType" class="field-label">版本控制类型</label>
+            <select id="vcsNodeType" class="input-select">
+              <option value="auto">自动检测（推荐 · Git / SVN）</option>
+              <option value="git">Git（强制）</option>
+              <option value="svn">SVN（强制）</option>
+            </select>
+          </div>
+          <div class="field-group full">
+            <div class="modal-hint-box" style="margin-top: 0;">
+              ⚠️ <strong>更新前会自动还原未提交更改</strong>：<code>git reset --hard</code> / <code>svn revert -R .</code>
+              （未跟踪 / 未版本化的新增文件不会删除）。<br>
+              路径为空或未检测到 Git / SVN 工作副本的节点，更新时将被<strong>跳过</strong>，不执行任何操作。
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnVcsNodeCancel" class="btn btn-ghost">取消</button>
+        <button id="btnVcsNodeSave" class="btn btn-primary">保存节点</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. AI 诊断弹窗 -->
   <div id="aiModal" class="modal-backdrop hidden">
     <div class="modal-dialog glass-modal modal-lg">
       <div class="modal-header">

@@ -787,11 +787,13 @@ function composeCommand(engine, profile, ctx) {
 
 let job = null;
 let check = null; // 环境编译检测任务（独立于打包 job，二者互斥运行）
+let vcs = null;   // 版本管理更新任务（与批量构建 / 环境检测互斥运行）
 const sseClients = new Set();
 
 function broadcast(evt) {
   if (evt.type === 'job-end' && job) job.end = { ok: evt.ok, reason: evt.reason, message: evt.message };
   if (evt.type === 'check-end' && check) check.end = { ok: evt.ok, reason: evt.reason, message: evt.message };
+  if (evt.type === 'vcs-end' && vcs) vcs.end = { ok: evt.ok, reason: evt.reason, message: evt.message, summary: evt.summary };
   const data = 'data: ' + JSON.stringify(evt) + '\n\n';
   for (const res of sseClients) { try { res.write(data); } catch { /* 断开 */ } }
 }
@@ -1015,6 +1017,7 @@ async function aiAnalyze(body) {
 async function startJob(req) {
   if (job && (job.state === 'running' || job.state === 'starting')) return { ok: false, error: '已有任务在运行' };
   if (check && (check.state === 'running' || check.state === 'starting')) return { ok: false, error: '环境编译检测进行中，请先停止检测' };
+  if (vcs && (vcs.state === 'running' || vcs.state === 'starting')) return { ok: false, error: '版本管理更新进行中，请先停止更新' };
 
   const projectAbs = resolveProject(req.projectPath);
   if (!isValidProject(projectAbs)) return { ok: false, error: '项目路径无效: ' + req.projectPath };
@@ -1265,6 +1268,7 @@ function runOneCheck(engine, projectAbs, target, st, idx) {
 async function startCheck(req) {
   if (check && (check.state === 'running' || check.state === 'starting')) return { ok: false, error: '已有环境检测在运行' };
   if (job && (job.state === 'running' || job.state === 'starting')) return { ok: false, error: '批量构建进行中，请先停止构建' };
+  if (vcs && (vcs.state === 'running' || vcs.state === 'starting')) return { ok: false, error: '版本管理更新进行中，请先停止更新' };
 
   const projectAbs = resolveProject(req.projectPath);
   if (!isValidProject(projectAbs)) return { ok: false, error: '项目路径无效: ' + req.projectPath };
@@ -1346,6 +1350,300 @@ function stopCheck() {
   return { ok: true };
 }
 
+// ─────────────────────────── 版本管理（SVN / Git 节点与分组） ───────────────────────────
+
+/**
+ * 版本管理：每个「节点」对应一条本地路径 + 版本控制类型（自动检测 Git / SVN，或手动指定），
+ * 「分组」把若干节点聚合为组。支持单节点 / 分组 / 全部一键更新；
+ * 任何更新前都会先「还原未提交更改」——Git：`git reset --hard`；SVN：`svn revert -R .`——
+ * 再执行 `git pull` / `svn update`。路径为空或未检测到工作副本的节点一律跳过，不执行任何更新。
+ * 节点与分组配置存于 config.json 的 `vcs` 字段。
+ */
+
+function vcsConfig() {
+  const c = config.vcs;
+  return c && typeof c === 'object'
+    ? { nodes: Array.isArray(c.nodes) ? c.nodes : [], groups: Array.isArray(c.groups) ? c.groups : [] }
+    : { nodes: [], groups: [] };
+}
+
+function saveVcsConfig(cfg) {
+  config.vcs = {
+    nodes: Array.isArray(cfg.nodes) ? cfg.nodes : [],
+    groups: Array.isArray(cfg.groups) ? cfg.groups : [],
+  };
+  saveConfig();
+}
+
+function resolveVcsPath(p) {
+  // 与 resolveProject 一致：相对路径基于本工具目录（TBuildTool\web）
+  if (!p || !String(p).trim()) return null;
+  return path.isAbsolute(p) ? path.normalize(p) : path.resolve(ROOT, p);
+}
+
+/**
+ * 自动检测指定路径的版本控制类型：依次向上（最多 12 层）查找 .git / .svn 标记。
+ * 显式指定类型的节点不再探测（见 nodeType）。
+ */
+function detectVcsType(absPath) {
+  if (!absPath || !fs.existsSync(absPath)) return null;
+  let cur = absPath;
+  for (let i = 0; i < 12; i++) {
+    try {
+      if (fs.existsSync(path.join(cur, '.git'))) return 'git';
+      if (fs.existsSync(path.join(cur, '.svn'))) return 'svn';
+    } catch { break; }
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+/** 节点显式指定的类型（git / svn）；auto 返回 null 表示需要自动检测 */
+function nodeType(node) {
+  const t = String((node && node.type) || 'auto').toLowerCase();
+  return (t === 'git' || t === 'svn') ? t : null;
+}
+
+function runSync(cmd, args, cwd, timeoutMs) {
+  try {
+    return spawnSync(cmd, args, {
+      cwd, encoding: 'utf8', timeout: timeoutMs || 10000, windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+function gitInfo(abs) {
+  const out = { type: 'git', branch: '', revision: '', dirty: false, dirtyCount: 0, error: null };
+  const br = runSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], abs);
+  if (br.error) { out.error = br.error; return out; }
+  out.branch = String(br.stdout || '').trim() || 'HEAD';
+  const rev = runSync('git', ['rev-parse', '--short=8', 'HEAD'], abs);
+  out.revision = String(rev.stdout || '').trim();
+  const st = runSync('git', ['status', '--porcelain'], abs, 20000);
+  if (!st.error && st.status === 0) {
+    const lines = String(st.stdout || '').split(/\r?\n/).filter(Boolean);
+    out.dirty = lines.length > 0;
+    out.dirtyCount = lines.length;
+  }
+  return out;
+}
+
+function svnInfo(abs) {
+  const out = { type: 'svn', branch: '', revision: '', dirty: false, dirtyCount: 0, error: null };
+  const info = runSync('svn', ['info', '--xml'], abs, 20000);
+  if (info.error) { out.error = info.error; return out; }
+  const text = String(info.stdout || '');
+  const rev = text.match(/revision="(\d+)"/);
+  const url = text.match(/<url>([^<]+)<\/url>/);
+  out.revision = rev ? rev[1] : '';
+  out.branch = url ? decodeURIComponent(url[1]) : '';
+  const st = runSync('svn', ['status'], abs, 20000);
+  if (!st.error && st.status === 0) {
+    const lines = String(st.stdout || '').split(/\r?\n/).filter(l => l.trim());
+    out.dirty = lines.length > 0;
+    out.dirtyCount = lines.length;
+  }
+  return out;
+}
+
+function probeNode(node) {
+  const abs = resolveVcsPath(node && node.path);
+  const base = { id: node.id, name: node.name || node.id, path: (node && node.path) || '' };
+  if (!abs || !fs.existsSync(abs)) {
+    return Object.assign(base, { ok: true, type: 'none', branch: '', revision: '', dirty: false, dirtyCount: 0, error: '路径为空或不存在' });
+  }
+  const type = nodeType(node) || detectVcsType(abs);
+  if (!type) {
+    return Object.assign(base, { ok: false, type: 'none', branch: '', revision: '', dirty: false, dirtyCount: 0, error: '未检测到 Git / SVN 工作副本（路径下无 .git 或 .svn）' });
+  }
+  let info;
+  try {
+    info = type === 'git' ? gitInfo(abs) : svnInfo(abs);
+  } catch (e) {
+    return Object.assign(base, { ok: false, type, error: '读取状态失败: ' + e.message });
+  }
+  return Object.assign(base, {
+    ok: !info.error,
+    type,
+    branch: info.branch || '',
+    revision: info.revision || '',
+    dirty: !!info.dirty,
+    dirtyCount: info.dirtyCount || 0,
+    error: info.error ? ('读取状态失败: ' + info.error) : null,
+  });
+}
+
+function pushVcsLine(text) {
+  if (!vcs) return;
+  vcs.lines.push(text);
+  if (vcs.lines.length > 2000) vcs.lines.splice(0, vcs.lines.length - 2000);
+  broadcast({ type: 'vcs-line', text });
+}
+
+function vcsCmdLine(cmd, args) { return quote(cmd) + ' ' + args.map(quote).join(' '); }
+
+/**
+ * 串行执行一条版本管理命令，stdout/stderr 实时经 SSE 推送；
+ * 支持取消（killProc 强杀 + 看门狗超时兜底）。
+ */
+function runVcsProc(node, index, label, cmd, args, cwd, timeoutMs) {
+  return new Promise(resolve => {
+    pushVcsLine(`\n── ${label}：${vcsCmdLine(cmd, args)}\n`);
+    let child;
+    try {
+      child = spawn(cmd, args, {
+        cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      });
+    } catch (e) {
+      pushVcsLine('[错误] 无法启动进程: ' + e.message + '\n');
+      resolve({ ok: false, exitCode: -1, error: e.message });
+      return;
+    }
+    vcs.child = child;
+    let buf = '';
+    const onData = d => {
+      const chunks = String(d);
+      const all = buf + chunks;
+      if (all.includes('\n')) {
+        const lines = all.split(/\r?\n/);
+        buf = lines.pop();
+        for (const l of lines) if (l.trim()) pushVcsLine(l + '\n');
+      } else {
+        buf = all;
+      }
+    };
+    if (child.stdout) child.stdout.on('data', onData);
+    if (child.stderr) child.stderr.on('data', onData);
+    child.on('error', e => pushVcsLine('[错误] ' + e.message + '\n'));
+
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; resolve(r); } };
+    const timer = setTimeout(() => {
+      killProc(child);
+      finish({ ok: false, exitCode: -1, error: '超时（' + timeoutMs + 'ms）' });
+    }, timeoutMs);
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (buf.trim()) pushVcsLine(buf + '\n');
+      if (vcs && vcs.child === child) vcs.child = null;
+      finish({ ok: code === 0, exitCode: code });
+    });
+  });
+}
+
+function vcsNodeResult(node, index, name, type, status, ok, message) {
+  const r = { id: node.id, name, type, status, ok, message, finishedAt: new Date().toISOString() };
+  if (vcs) vcs.results[node.id] = r;
+  broadcast({ type: 'vcs-node-end', index, nodeId: node.id, name, type, status, ok, message });
+  return r;
+}
+
+/**
+ * 更新单个节点：先还原未提交更改，再拉取 / 更新。
+ * 路径为空 → skipped（不执行任何操作）；未检测到工作副本 → skipped。
+ */
+async function updateVcsNode(node, index, timeoutMs) {
+  const name = node.name || node.id;
+  const abs = resolveVcsPath(node.path);
+  if (!abs || !fs.existsSync(abs)) {
+    pushVcsLine('（路径为空或不存在，跳过节点，未执行任何更新操作）\n');
+    return vcsNodeResult(node, index, name, 'none', 'skipped', false, '路径为空或不存在，跳过');
+  }
+  const type = nodeType(node) || detectVcsType(abs);
+  if (!type) {
+    pushVcsLine('（未检测到 Git / SVN 工作副本，跳过节点，未执行任何更新操作）\n');
+    return vcsNodeResult(node, index, name, 'none', 'skipped', false, '未检测到 Git / SVN 工作副本');
+  }
+
+  if (type === 'git') {
+    const r = await runVcsProc(node, index, '还原未提交更改', 'git', ['reset', '--hard'], abs, timeoutMs);
+    if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+    if (!r.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '还原未提交更改失败' + (r.error ? '：' + r.error : '（退出码 ' + r.exitCode + '）'));
+    const u = await runVcsProc(node, index, '拉取最新代码', 'git', ['pull'], abs, timeoutMs);
+    if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+    if (!u.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '更新失败' + (u.error ? '：' + u.error : '（退出码 ' + u.exitCode + '）'));
+    return vcsNodeResult(node, index, name, type, 'ok', true, '更新成功');
+  }
+
+  // SVN：--non-interactive 避免凭据 / 交互提示挂起
+  const r = await runVcsProc(node, index, '还原未提交更改', 'svn', ['--non-interactive', 'revert', '-R', '.'], abs, timeoutMs);
+  if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+  if (!r.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '还原未提交更改失败' + (r.error ? '：' + r.error : '（退出码 ' + r.exitCode + '）'));
+  const u = await runVcsProc(node, index, '更新到最新版本', 'svn', ['--non-interactive', 'update'], abs, timeoutMs);
+  if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+  if (!u.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '更新失败' + (u.error ? '：' + u.error : '（退出码 ' + u.exitCode + '）'));
+  return vcsNodeResult(node, index, name, type, 'ok', true, '更新成功');
+}
+
+function summarizeVcs(results) {
+  const s = { total: 0, ok: 0, fail: 0, skipped: 0, cancelled: 0 };
+  for (const r of Object.values(results || {})) {
+    s.total++;
+    if (r.status === 'skipped') s.skipped++;
+    else if (r.status === 'cancelled') s.cancelled++;
+    else if (r.ok) s.ok++;
+    else s.fail++;
+  }
+  return s;
+}
+
+async function startVcsUpdate(req) {
+  if (job && (job.state === 'running' || job.state === 'starting')) return { ok: false, error: '批量打包进行中，请先停止构建' };
+  if (check && (check.state === 'running' || check.state === 'starting')) return { ok: false, error: '环境编译检测进行中，请先停止检测' };
+  if (vcs && (vcs.state === 'running' || vcs.state === 'starting')) return { ok: false, error: '已有版本更新任务在运行' };
+
+  let nodes = vcsConfig().nodes.slice();
+  if (Array.isArray(req.ids) && req.ids.length) {
+    const set = new Set(req.ids.map(String));
+    nodes = nodes.filter(n => set.has(String(n.id)));
+  }
+  if (!nodes.length) return { ok: false, error: '没有可更新的版本管理节点（请先添加节点并填写路径）' };
+  const timeoutMs = Math.max(30000, (Number(req.timeoutMinutes) || 30) * 60000);
+
+  vcs = { state: 'starting', nodes, index: 0, lines: [], results: {}, child: null, cancel: false, end: null, startedAt: new Date().toISOString() };
+  pushVcsLine(`\n════════ 版本管理更新启动：共 ${nodes.length} 个节点（更新前自动还原未提交更改） ════════\n`);
+  broadcast({ type: 'vcs-start', count: nodes.length, ids: nodes.map(n => n.id) });
+
+  const run = async () => {
+    vcs.state = 'running';
+    try {
+      for (let i = 0; i < nodes.length; i++) {
+        if (vcs.cancel) { broadcast({ type: 'vcs-end', ok: false, reason: 'cancelled' }); return; }
+        vcs.index = i;
+        const node = nodes[i];
+        pushVcsLine(`\n════════ [${i + 1}/${nodes.length}] 节点：${node.name || node.id}（${node.path || '路径为空'}） ════════\n`);
+        broadcast({ type: 'vcs-node-start', index: i, nodeId: node.id, name: node.name || node.id, path: node.path || '' });
+        await updateVcsNode(node, i, timeoutMs);
+        if (vcs.cancel) { broadcast({ type: 'vcs-end', ok: false, reason: 'cancelled' }); return; }
+      }
+      const s = summarizeVcs(vcs.results);
+      pushVcsLine(`\n════════ 版本管理更新结束：成功 ${s.ok} ｜ 失败 ${s.fail} ｜ 跳过 ${s.skipped} ════════\n`);
+      broadcast({ type: 'vcs-end', ok: s.fail === 0 && s.cancelled === 0, summary: s });
+    } catch (e) {
+      console.error('[vcs] 异常:', e);
+      try { broadcast({ type: 'vcs-end', ok: false, reason: 'error', message: e.message }); } catch { /* */ }
+    } finally {
+      vcs.state = 'done';
+    }
+  };
+
+  run();
+  return { ok: true };
+}
+
+function stopVcs() {
+  if (!vcs || vcs.state === 'done') return { ok: false, error: '没有运行中的版本更新任务' };
+  vcs.cancel = true;
+  killProc(vcs.child);
+  return { ok: true };
+}
+
 // ─────────────────────────── HTTP 服务 ───────────────────────────
 
 function readBody(req) {
@@ -1396,6 +1694,10 @@ const server = http.createServer(async (req, res) => {
         check: check ? {
           state: check.state, index: check.index, count: check.targets.length,
           targets: check.targets, results: check.results, end: check.end || null, runDir: check.runDir,
+        } : null,
+        vcs: vcs ? {
+          state: vcs.state, index: vcs.index, count: vcs.nodes.length,
+          results: vcs.results, end: vcs.end || null,
         } : null,
       });
       return;
@@ -1552,6 +1854,46 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ── 版本管理 API ──
+    if (req.method === 'GET' && p === '/api/vcs/state') {
+      sendJson(res, 200, { ok: true, vcs: vcsConfig() });
+      return;
+    }
+
+    if (req.method === 'POST' && p === '/api/vcs/save') {
+      const body = await readBody(req) || {};
+      saveVcsConfig({ nodes: body.nodes, groups: body.groups });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === 'POST' && p === '/api/vcs/probe') {
+      const body = await readBody(req) || {};
+      let nodes = vcsConfig().nodes.slice();
+      if (Array.isArray(body.nodes) && body.nodes.length) {
+        // 临时探测（未保存的节点，用于添加节点弹窗内「检测类型」）
+        nodes = body.nodes.map((n, i) => ({ id: 'adhoc' + i, name: n.name || ('adhoc' + i), path: n.path, type: n.type || 'auto' }));
+      } else if (Array.isArray(body.ids) && body.ids.length) {
+        const set = new Set(body.ids.map(String));
+        nodes = nodes.filter(n => set.has(String(n.id)));
+      }
+      sendJson(res, 200, { ok: true, results: nodes.map(probeNode) });
+      return;
+    }
+
+    if (req.method === 'POST' && p === '/api/vcs/update') {
+      const body = await readBody(req) || {};
+      const r = await startVcsUpdate(body);
+      if (!r.ok) { sendJson(res, 400, r); return; }
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === 'POST' && p === '/api/vcs/stop') {
+      sendJson(res, 200, stopVcs());
+      return;
+    }
+
     if (req.method === 'POST' && p === '/api/ai/analyze') {
       const body = await readBody(req) || {};
       const r = await aiAnalyze(body);
@@ -1648,6 +1990,19 @@ const server = http.createServer(async (req, res) => {
         for (const l of ctail) res.write('data: ' + JSON.stringify({ type: 'check-line', text: l }) + '\n\n');
       } else {
         res.write('data: ' + JSON.stringify({ type: 'check-hello', check: null }) + '\n\n');
+      }
+      if (vcs) {
+        res.write('data: ' + JSON.stringify({
+          type: 'vcs-hello',
+          vcs: {
+            state: vcs.state, index: vcs.index, count: vcs.nodes.length,
+            results: vcs.results || {}, end: vcs.end || null,
+          },
+        }) + '\n\n');
+        const vtail = vcs.lines.slice(-300);
+        for (const l of vtail) res.write('data: ' + JSON.stringify({ type: 'vcs-line', text: l }) + '\n\n');
+      } else {
+        res.write('data: ' + JSON.stringify({ type: 'vcs-hello', vcs: null }) + '\n\n');
       }
       sseClients.add(res);
       const iv = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* */ } }, 20000);

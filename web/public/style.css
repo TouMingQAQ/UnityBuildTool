@@ -1460,6 +1460,158 @@ body {
   color: #e9d5ff;
 }
 
+/* ────────── 版本管理（SVN / Git） ────────── */
+.vcs-groups-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.vcs-group-card {
+  margin-bottom: 0;
+  border-top: 2px solid var(--accent-indigo);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.vcs-group-card.drag-over,
+#vcsUngroupedCard.drag-over {
+  border-color: var(--accent-primary);
+  border-style: dashed;
+  box-shadow: 0 0 0 2px var(--accent-glow), var(--shadow-md);
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.vcs-group-name {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 13.5px;
+  border-radius: 4px;
+  padding: 2px 6px;
+  min-width: 60px;
+  max-width: 200px;
+  transition: all 0.15s ease;
+}
+.vcs-group-name:hover { border-color: var(--border-subtle); }
+.vcs-group-name:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background: var(--bg-input);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.vcs-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  min-height: 64px;
+}
+
+.vcs-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  cursor: grab;
+  transition: all 0.15s ease;
+}
+.vcs-node:hover {
+  border-color: var(--border-medium);
+  background: var(--bg-card-hover);
+}
+.vcs-node.dragging { opacity: 0.45; }
+.vcs-node.busy {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.vcs-drag {
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.vcs-node-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.vcs-node-name {
+  font-weight: 700;
+  color: var(--text-main);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vcs-node-path,
+.vcs-node-meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vcs-node-meta { color: var(--text-muted); }
+.vcs-path-empty { color: var(--text-dim); font-style: italic; }
+.vcs-dirty { color: #fbbf24; font-weight: 600; }
+
+.vcs-node-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.vcs-st {
+  width: 52px;
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 2px 0;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+.vcs-st.pending      { color: var(--text-dim); border: 1px dashed var(--border-subtle); background: rgba(255, 255, 255, 0.02); }
+.vcs-st.running      { color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.12); }
+.vcs-st.ok           { color: #34d399; border: 1px solid rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.12); }
+.vcs-st.fail         { color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.5); background: rgba(244, 63, 94, 0.12); }
+.vcs-st.unsupported  { color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.5); background: rgba(56, 189, 248, 0.12); }
+.vcs-st.cancelled    { color: var(--text-dim); border: 1px dashed var(--border-subtle); background: rgba(255, 255, 255, 0.02); }
+
+.vcs-badge-git  { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.3); }
+.vcs-badge-svn  { background: rgba(63, 118, 248, 0.15); color: #7da4fc; border: 1px solid rgba(63, 118, 248, 0.3); }
+.vcs-badge-none { background: rgba(255, 255, 255, 0.05); color: var(--text-dim); border: 1px solid var(--border-subtle); }
+
+.vcs-drop-hint {
+  padding: 20px 12px;
+  font-size: 11.5px;
+}
+
+.vcs-probe-result {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+.vcs-probe-result.ok  { color: #34d399; }
+.vcs-probe-result.err { color: #fb7185; }
+
 /* ────────── Toast ────────── */
 .toast-container {
   position: fixed;

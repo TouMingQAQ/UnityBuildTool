@@ -32,6 +32,13 @@ const state = {
   checkRawLogs: '',       // 环境检测日志
   checkJob: null,         // 最近一次环境检测 SSE 状态
   checkRunDir: null,      // 本次检测结果目录
+  vcsNodes: [],           // 版本管理节点：[{ id, name, path, type }]（type: auto/git/svn）
+  vcsGroups: [],          // 版本管理分组：[{ id, name, nodeIds }]
+  vcsNodeStates: {},      // nodeId -> { status, type, branch, revision, dirty, dirtyCount, message }
+  vcsJob: null,           // 最近一次版本更新 SSE 状态
+  vcsRawLogs: '',         // 版本管理日志
+  vcsEditId: null,        // 节点弹窗正在编辑的节点 id（null = 新增）
+  vcsDragId: null,        // 正在拖动的节点 id
 };
 
 /* ─────────────── 标签页切换 Tab Navigation ─────────────── */
@@ -1121,6 +1128,68 @@ function handleSSE(d) {
     return;
   }
 
+  // ── 版本管理事件 ──
+  if (d.type === 'vcs-hello') {
+    if (d.vcs) {
+      state.vcsJob = d.vcs;
+      for (const id of Object.keys(d.vcs.results || {})) {
+        const res = d.vcs.results[id];
+        const st = state.vcsNodeStates[id] || (state.vcsNodeStates[id] = {});
+        st.status = res.status || (res.ok ? 'ok' : 'fail');
+        st.type = res.type || st.type;
+        st.message = res.message || '';
+      }
+      if (d.vcs.state === 'running' || d.vcs.state === 'starting') {
+        $('btnVcsStop').disabled = false;
+        $('btnVcsUpdateAll').disabled = true;
+        showVcsBanner('run', `版本管理更新进行中（第 ${(d.vcs.index || 0) + 1}/${d.vcs.count} 个节点）`);
+        updateHeaderStatus('running', '版本更新中…');
+        renderVcs();
+      } else if (d.vcs.end) {
+        showVcsEnd(d.vcs.end);
+      }
+    }
+    return;
+  }
+
+  if (d.type === 'vcs-start') {
+    state.vcsJob = { state: 'running', count: d.count, index: 0 };
+    showVcsBanner('run', `版本管理更新已启动，共 ${d.count} 个节点（更新前自动还原未提交更改）`);
+    updateHeaderStatus('running', '版本更新中…');
+    $('btnVcsStop').disabled = false;
+    $('btnVcsUpdateAll').disabled = true;
+    return;
+  }
+
+  if (d.type === 'vcs-node-start') {
+    if (state.vcsJob) state.vcsJob.index = d.index;
+    const st = state.vcsNodeStates[d.nodeId] || (state.vcsNodeStates[d.nodeId] = {});
+    st.status = 'updating';
+    st.message = d.path ? '还原并更新中…' : '路径为空，跳过';
+    renderVcs();
+    appendVcsLog(`\n▶ 开始更新节点：${d.name}（${d.path || '路径为空'}）\n`);
+    return;
+  }
+
+  if (d.type === 'vcs-line') {
+    appendVcsLog(d.text);
+    return;
+  }
+
+  if (d.type === 'vcs-node-end') {
+    const st = state.vcsNodeStates[d.nodeId] || (state.vcsNodeStates[d.nodeId] = {});
+    st.status = ['ok', 'fail', 'skipped', 'cancelled'].includes(d.status) ? d.status : (d.ok ? 'ok' : 'fail');
+    st.type = d.type || st.type;
+    st.message = d.message || '';
+    renderVcs();
+    return;
+  }
+
+  if (d.type === 'vcs-end') {
+    showVcsEnd(d.end || d);
+    return;
+  }
+
   if (d.type === 'hello') {
     if (d.job) {
       state.job = d.job;
@@ -1341,6 +1410,473 @@ function filterLogView(search) {
   lv.textContent = filtered.join('\n');
 }
 
+/* ─────────────── 版本管理（SVN / Git 节点与分组） ─────────────── */
+
+const VCS_STATUS = {
+  idle:      { label: '空闲',   cls: 'pending' },
+  probing:   { label: '探测中', cls: 'running' },
+  updating:  { label: '更新中', cls: 'running' },
+  ok:        { label: '成功',   cls: 'ok' },
+  fail:      { label: '失败',   cls: 'fail' },
+  skipped:   { label: '跳过',   cls: 'unsupported' },
+  cancelled: { label: '已取消', cls: 'cancelled' },
+};
+
+function vcsNodeById(id) { return state.vcsNodes.find(n => String(n.id) === String(id)); }
+function vcsGroupById(id) { return state.vcsGroups.find(g => String(g.id) === String(id)); }
+function vcsGroupOf(nodeId) {
+  return state.vcsGroups.find(g => (g.nodeIds || []).some(x => String(x) === String(nodeId))) || null;
+}
+function vcsUngrouped() {
+  return state.vcsNodes.filter(n => !vcsGroupOf(n.id));
+}
+function vcsBusy() {
+  return !!(state.vcsJob && (state.vcsJob.state === 'running' || state.vcsJob.state === 'starting'));
+}
+
+/* 保存节点 / 分组配置（防抖） */
+let vcsSaveTimer = null;
+function scheduleVcsSave() {
+  clearTimeout(vcsSaveTimer);
+  vcsSaveTimer = setTimeout(async () => {
+    try {
+      await api('/api/vcs/save', { nodes: state.vcsNodes, groups: state.vcsGroups });
+    } catch (e) {
+      console.warn('vcs save:', e.message);
+    }
+  }, 400);
+}
+
+function vcsNodeCard(n) {
+  const st = state.vcsNodeStates[n.id] || {};
+  const status = st.status || 'idle';
+  const meta = VCS_STATUS[status] || VCS_STATUS.idle;
+  const type = st.type || (n.type !== 'auto' ? n.type : 'none');
+  const typeBadge = type === 'git'
+    ? '<span class="badge vcs-badge-git">Git</span>'
+    : type === 'svn'
+      ? '<span class="badge vcs-badge-svn">SVN</span>'
+      : '<span class="badge vcs-badge-none">未检测</span>';
+
+  const sub = [];
+  if (st.branch) sub.push(`分支 ${esc(st.branch)}`);
+  if (st.revision) sub.push(type === 'svn' ? 'r' + esc(st.revision) : '#' + esc(st.revision));
+  if (st.dirty) sub.push(`<span class="vcs-dirty" title="存在未提交更改，更新前会自动还原">⚠ ${st.dirtyCount || ''} 处未提交</span>`);
+  if (st.message) sub.push(esc(st.message));
+
+  const pathTxt = n.path
+    ? esc(n.path)
+    : '<span class="vcs-path-empty">（路径为空，不执行更新）</span>';
+
+  return `<div class="vcs-node ${status === 'updating' || status === 'probing' ? 'busy' : ''}" draggable="true" data-nid="${esc(n.id)}" title="拖动 ⠿ 手柄将节点归入分组">
+    <span class="vcs-drag" title="拖动归组">⠿</span>
+    <span class="vcs-st ${meta.cls}">${meta.label}</span>
+    ${typeBadge}
+    <span class="vcs-node-main">
+      <span class="vcs-node-name">${esc(n.name)}</span>
+      <small class="vcs-node-path">${pathTxt}</small>
+      ${sub.length ? `<small class="vcs-node-meta">${sub.join(' · ')}</small>` : ''}
+    </span>
+    <span class="vcs-node-actions">
+      ${vcsBusy() ? '' : `<button class="btn btn-xs btn-ghost" data-vcs-update="${esc(n.id)}" title="还原未提交更改并更新">更新</button>`}
+      <button class="btn btn-xs btn-ghost" data-vcs-probe="${esc(n.id)}" title="重新检测类型与状态">刷新</button>
+      <button class="btn btn-xs btn-ghost" data-vcs-edit="${esc(n.id)}" title="编辑节点">编辑</button>
+      <button class="btn btn-xs btn-ghost" data-vcs-del="${esc(n.id)}" title="删除节点">×</button>
+    </span>
+  </div>`;
+}
+
+function vcsGroupCard(g) {
+  const nodes = (g.nodeIds || []).map(vcsNodeById).filter(Boolean);
+  return `<div class="card glass-card vcs-group-card" data-gid="${esc(g.id)}">
+    <div class="card-header">
+      <div class="card-title" style="flex: 1; min-width: 0;">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+        <input type="text" class="vcs-group-name" value="${esc(g.name)}" data-gname="${esc(g.id)}" title="点击重命名分组（回车 / 失焦保存）">
+        <span class="counter-badge">${nodes.length} 个节点</span>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-sm btn-primary" data-vcs-update-group="${esc(g.id)}" ${vcsBusy() ? 'disabled' : ''}>更新分组</button>
+        <button class="btn btn-sm btn-ghost" data-vcs-del-group="${esc(g.id)}" title="删除分组（节点保留，回到未分组）">删除</button>
+      </div>
+    </div>
+    <div class="card-body vcs-group-body">
+      ${nodes.map(n => vcsNodeCard(n)).join('') || '<div class="empty-state vcs-drop-hint">空分组 · 将节点卡片拖入此处归组</div>'}
+    </div>
+  </div>`;
+}
+
+function bindVcsEvents() {
+  document.querySelectorAll('[data-vcs-update]').forEach(b => {
+    b.onclick = () => doVcsUpdate([b.dataset.vcsUpdate], '更新节点');
+  });
+  document.querySelectorAll('[data-vcs-update-group]').forEach(b => {
+    b.onclick = () => {
+      const g = vcsGroupById(b.dataset.vcsUpdateGroup);
+      if (!g) return;
+      doVcsUpdate((g.nodeIds || []).slice(), '更新分组「' + (g.name || '') + '」');
+    };
+  });
+  document.querySelectorAll('[data-vcs-probe]').forEach(b => {
+    b.onclick = () => doVcsProbe([b.dataset.vcsProbe]);
+  });
+  document.querySelectorAll('[data-vcs-edit]').forEach(b => {
+    b.onclick = () => openVcsNodeModal(b.dataset.vcsEdit);
+  });
+  document.querySelectorAll('[data-vcs-del]').forEach(b => {
+    b.onclick = () => deleteVcsNode(b.dataset.vcsDel);
+  });
+  document.querySelectorAll('[data-vcs-del-group]').forEach(b => {
+    b.onclick = () => deleteVcsGroup(b.dataset.vcsDelGroup);
+  });
+  document.querySelectorAll('.vcs-group-name').forEach(inp => {
+    inp.onchange = () => renameVcsGroup(inp.dataset.gname, inp.value);
+    inp.onkeydown = e => { if (e.key === 'Enter') inp.blur(); };
+  });
+}
+
+function clearVcsDragOver() {
+  document.querySelectorAll('.vcs-group-card, #vcsUngroupedCard').forEach(el => el.classList.remove('drag-over'));
+}
+
+function bindVcsDnD() {
+  document.querySelectorAll('.vcs-node[draggable="true"]').forEach(el => {
+    el.addEventListener('dragstart', e => {
+      if (e.target.closest('button, input, select, textarea')) { e.preventDefault(); return; }
+      const id = el.dataset.nid;
+      state.vcsDragId = id;
+      e.dataTransfer.setData('text/plain', id);
+      e.dataTransfer.effectAllowed = 'move';
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => {
+      state.vcsDragId = null;
+      el.classList.remove('dragging');
+      clearVcsDragOver();
+    });
+  });
+
+  const bindDrop = (el, groupId) => {
+    el.addEventListener('dragover', e => {
+      if (!state.vcsDragId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      el.classList.add('drag-over');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+    el.addEventListener('drop', e => {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      const id = state.vcsDragId || e.dataTransfer.getData('text/plain');
+      if (id) moveVcsNodeToGroup(id, groupId);
+    });
+  };
+
+  document.querySelectorAll('.vcs-group-card').forEach(card => bindDrop(card, card.dataset.gid));
+  const un = $('vcsUngroupedCard');
+  if (un) bindDrop(un, null);
+}
+
+function moveVcsNodeToGroup(nodeId, groupId) {
+  if (!vcsNodeById(nodeId)) return;
+  // 先从所有分组中移除
+  state.vcsGroups.forEach(g => {
+    g.nodeIds = (g.nodeIds || []).filter(x => String(x) !== String(nodeId));
+  });
+  if (groupId) {
+    const g = vcsGroupById(groupId);
+    if (g) {
+      g.nodeIds = g.nodeIds || [];
+      if (!g.nodeIds.some(x => String(x) === String(nodeId))) g.nodeIds.push(nodeId);
+    }
+  }
+  renderVcs();
+  scheduleVcsSave();
+  showToast(groupId ? '节点已归入分组' : '节点已移出分组', 'ok');
+}
+
+function addVcsGroup() {
+  state.vcsGroups.push({
+    id: 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: '新分组',
+    nodeIds: [],
+  });
+  renderVcs();
+  scheduleVcsSave();
+  showToast('已新建分组', 'ok');
+}
+
+function renameVcsGroup(id, name) {
+  const g = vcsGroupById(id);
+  if (!g) return;
+  g.name = (name || '').trim() || '新分组';
+  scheduleVcsSave();
+}
+
+function deleteVcsGroup(id) {
+  if (!confirm('确定删除分组「' + (vcsGroupById(id)?.name || id) + '」？分组内节点将回到未分组列表。')) return;
+  state.vcsGroups = state.vcsGroups.filter(g => String(g.id) !== String(id));
+  renderVcs();
+  scheduleVcsSave();
+  showToast('已删除分组（节点保留）', 'info');
+}
+
+function deleteVcsNode(id) {
+  const n = vcsNodeById(id);
+  if (!n) return;
+  if (!confirm('确定删除节点「' + (n.name || id) + '」？')) return;
+  state.vcsNodes = state.vcsNodes.filter(x => String(x.id) !== String(id));
+  state.vcsGroups.forEach(g => {
+    g.nodeIds = (g.nodeIds || []).filter(x => String(x) !== String(id));
+  });
+  delete state.vcsNodeStates[id];
+  renderVcs();
+  scheduleVcsSave();
+  showToast('节点已删除', 'info');
+}
+
+function renderVcs() {
+  const un = vcsUngrouped();
+  const unArea = $('vcsUngroupedArea');
+  if (unArea) {
+    unArea.innerHTML = un.map(n => vcsNodeCard(n)).join('') ||
+      '<div class="empty-state vcs-drop-hint">暂无节点 · 点击「添加节点」创建第一条仓库路径（默认路径为空，不执行更新）</div>';
+  }
+  const uc = $('vcsUngroupedCount');
+  if (uc) uc.textContent = un.length;
+
+  const ga = $('vcsGroupsArea');
+  if (ga) ga.innerHTML = state.vcsGroups.length ? state.vcsGroups.map(vcsGroupCard).join('') : '';
+  const eh = $('vcsEmptyHint');
+  if (eh) eh.classList.toggle('hidden', state.vcsGroups.length > 0);
+
+  bindVcsEvents();
+  bindVcsDnD();
+}
+
+/* 探测：自动检测路径类型（Git / SVN）+ 分支 / 版本 / 未提交状态 */
+async function doVcsProbe(ids) {
+  const targets = (ids || state.vcsNodes.map(n => n.id)).filter(id => vcsNodeById(id));
+  if (!targets.length) return;
+  for (const id of targets) {
+    const n = vcsNodeById(id);
+    const st = state.vcsNodeStates[id] || (state.vcsNodeStates[id] = {});
+    if (!n.path.trim()) {
+      st.status = 'idle';
+      st.type = 'none';
+      st.branch = ''; st.revision = ''; st.dirty = false; st.dirtyCount = 0;
+      st.message = '路径为空';
+      continue;
+    }
+    st.status = 'probing';
+    st.message = '';
+  }
+  renderVcs();
+  try {
+    const r = await api('/api/vcs/probe', { ids: targets });
+    for (const res of r.results || []) {
+      const st = state.vcsNodeStates[res.id] || (state.vcsNodeStates[res.id] = {});
+      st.type = res.type || 'none';
+      st.branch = res.branch || '';
+      st.revision = res.revision || '';
+      st.dirty = !!res.dirty;
+      st.dirtyCount = res.dirtyCount || 0;
+      st.message = res.error || '';
+      st.status = (res.type === 'none' || res.ok) ? 'idle' : 'fail';
+    }
+    renderVcs();
+  } catch (e) {
+    showToast('状态探测失败: ' + e.message, 'err');
+    for (const id of targets) {
+      const st = state.vcsNodeStates[id] || {};
+      if (st.status === 'probing') st.status = 'idle';
+    }
+    renderVcs();
+  }
+}
+
+/* 更新：还原未提交更改 → 拉取 / 更新（路径为空节点直接跳过） */
+async function doVcsUpdate(ids, label) {
+  const valid = (ids || []).filter(id => vcsNodeById(id));
+  if (!valid.length) {
+    showToast(label + '：没有可更新的节点', 'err');
+    return;
+  }
+  if (!valid.some(id => vcsNodeById(id).path.trim())) {
+    showToast('所选节点路径均为空，未执行任何更新操作', 'err');
+    return;
+  }
+  $('btnVcsStop').disabled = false;
+  $('btnVcsUpdateAll').disabled = true;
+  showVcsBanner('run', '正在启动版本管理更新…');
+  updateHeaderStatus('running', '版本更新中…');
+  for (const id of valid) {
+    const st = state.vcsNodeStates[id] || (state.vcsNodeStates[id] = {});
+    st.status = 'updating';
+    st.message = '排队中…';
+  }
+  renderVcs();
+  try {
+    await api('/api/vcs/update', { ids: valid });
+    showToast('版本更新已启动', 'ok');
+  } catch (e) {
+    showVcsBanner('fail', '启动失败：' + e.message);
+    updateHeaderStatus('fail', '更新启动失败');
+    $('btnVcsStop').disabled = true;
+    $('btnVcsUpdateAll').disabled = false;
+    for (const id of valid) {
+      const st = state.vcsNodeStates[id] || {};
+      if (st.status === 'updating') st.status = 'idle';
+    }
+    renderVcs();
+    showToast('启动失败: ' + e.message, 'err');
+  }
+}
+
+async function doVcsStop() {
+  try {
+    await api('/api/vcs/stop');
+    showToast('已请求终止版本更新', 'info');
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+function showVcsBanner(type, text) {
+  const b = $('vcsBanner');
+  if (!b) return;
+  b.className = `banner ${type}`;
+  b.textContent = text;
+  b.classList.remove('hidden');
+}
+
+function showVcsEnd(end) {
+  $('btnVcsStop').disabled = true;
+  $('btnVcsUpdateAll').disabled = false;
+  const s = (end && end.summary) || {};
+  if (end && end.ok) {
+    showVcsBanner('ok', `✓ 版本管理更新完成：成功 ${s.ok || 0}${s.skipped ? '，跳过 ' + s.skipped : ''}`);
+    updateHeaderStatus('ok', '版本更新完成');
+    showToast('版本管理更新完成', 'ok');
+  } else if (end && end.reason === 'cancelled') {
+    showVcsBanner('fail', '⚠ 版本更新已终止');
+    updateHeaderStatus('idle', '版本更新已终止');
+    showToast('版本更新已终止', 'info');
+  } else {
+    showVcsBanner('fail', `✗ 版本更新结束：成功 ${s.ok || 0}，失败 ${s.fail || 0}${s.skipped ? '，跳过 ' + s.skipped : ''}`);
+    updateHeaderStatus('fail', '版本更新存在失败项');
+    showToast('版本更新完成，部分节点失败', 'err');
+  }
+  // 自动刷新已更新节点的最新状态（分支 / 版本）
+  const updated = Object.keys(state.vcsNodeStates).filter(id =>
+    ['ok', 'fail', 'skipped', 'cancelled'].includes((state.vcsNodeStates[id] || {}).status));
+  if (updated.length) doVcsProbe(updated);
+}
+
+/* 节点添加 / 编辑弹窗 */
+function openVcsNodeModal(id) {
+  state.vcsEditId = id || null;
+  const n = id ? vcsNodeById(id) : null;
+  $('vcsNodeModalTitle').textContent = n ? `编辑节点：${n.name || ''}` : '添加版本管理节点';
+  $('vcsNodeName').value = n ? (n.name || '') : '';
+  $('vcsNodePath').value = n ? (n.path || '') : '';
+  $('vcsNodeType').value = (n && (n.type === 'git' || n.type === 'svn')) ? n.type : 'auto';
+  $('vcsNodeProbeResult').textContent = '';
+  $('vcsNodeModal').classList.remove('hidden');
+  $('vcsNodeName').focus();
+  $('vcsNodeName').select();
+}
+
+function closeVcsNodeModal() {
+  $('vcsNodeModal').classList.add('hidden');
+  state.vcsEditId = null;
+}
+
+function saveVcsNode() {
+  const name = $('vcsNodeName').value.trim();
+  const path = $('vcsNodePath').value.trim();
+  const type = $('vcsNodeType').value || 'auto';
+  if (!name) {
+    showToast('请填写节点名称', 'err');
+    $('vcsNodeName').focus();
+    return;
+  }
+  if (state.vcsEditId) {
+    const n = vcsNodeById(state.vcsEditId);
+    if (n) {
+      n.name = name;
+      n.path = path;
+      n.type = type;
+    }
+    const st = state.vcsNodeStates[state.vcsEditId] || (state.vcsNodeStates[state.vcsEditId] = {});
+    st.status = 'idle'; st.type = ''; st.message = ''; st.dirty = false;
+    doVcsProbe([state.vcsEditId]);
+  } else {
+    const id = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    state.vcsNodes.push({ id, name, path, type });
+    state.vcsNodeStates[id] = { status: 'idle', type: '', message: '' };
+    doVcsProbe([id]);
+  }
+  closeVcsNodeModal();
+  renderVcs();
+  scheduleVcsSave();
+  showToast('节点已保存', 'ok');
+}
+
+async function probeVcsNodeInModal() {
+  const path = $('vcsNodePath').value.trim();
+  const type = $('vcsNodeType').value || 'auto';
+  const box = $('vcsNodeProbeResult');
+  if (!path) {
+    box.textContent = '路径为空：填路径后即可检测类型。';
+    box.className = 'vcs-probe-result';
+    return;
+  }
+  box.textContent = '探测中…';
+  box.className = 'vcs-probe-result';
+  try {
+    const r = await api('/api/vcs/probe', { nodes: [{ id: 'adhoc', name: 'adhoc', path, type }] });
+    const res = (r.results || [])[0];
+    if (!res) throw new Error('无探测结果');
+    if (res.type === 'git' || res.type === 'svn') {
+      const extra = [];
+      if (res.branch) extra.push('分支 ' + res.branch);
+      if (res.revision) extra.push(res.type === 'svn' ? 'r' + res.revision : '#' + res.revision);
+      if (res.dirty) extra.push(`${res.dirtyCount || ''} 处未提交`);
+      box.textContent = `✓ 检测到 ${res.type.toUpperCase()}：${extra.join(' · ')}`;
+      box.className = 'vcs-probe-result ok';
+    } else {
+      box.textContent = '✗ ' + (res.error || '未检测到 Git / SVN 工作副本');
+      box.className = 'vcs-probe-result err';
+    }
+  } catch (e) {
+    box.textContent = '✗ 探测失败：' + e.message;
+    box.className = 'vcs-probe-result err';
+  }
+}
+
+/* 版本管理日志视图 */
+function appendVcsLog(text) {
+  state.vcsRawLogs += text;
+  if (state.vcsRawLogs.length > 300000) state.vcsRawLogs = state.vcsRawLogs.slice(-300000);
+  const lv = $('vcsLogView');
+  if (!lv) return;
+  const search = $('vcsLogSearch')?.value.trim();
+  if (!search) lv.textContent = state.vcsRawLogs;
+  else filterVcsLogView(search);
+  if ($('vcsAutoScroll')?.checked) lv.scrollTop = lv.scrollHeight;
+}
+
+function filterVcsLogView(search) {
+  const lv = $('vcsLogView');
+  if (!lv) return;
+  if (!search) {
+    lv.textContent = state.vcsRawLogs;
+    return;
+  }
+  lv.textContent = state.vcsRawLogs.split('\n').filter(l => l.toLowerCase().includes(search.toLowerCase())).join('\n');
+}
+
 /* ─────────────── 页面初始化与事件绑定 ─────────────── */
 
 async function init() {
@@ -1420,6 +1956,21 @@ async function init() {
   $('checkLogSearch').oninput = e => filterCheckLogView(e.target.value.trim());
   renderCheckEnvChips();
 
+  // 版本管理按钮
+  $('btnVcsAddNode').onclick = () => openVcsNodeModal(null);
+  $('btnVcsAddGroup').onclick = addVcsGroup;
+  $('btnVcsUpdateAll').onclick = () => doVcsUpdate(state.vcsNodes.map(n => n.id), '更新全部节点');
+  $('btnVcsProbe').onclick = () => doVcsProbe(state.vcsNodes.map(n => n.id));
+  $('btnVcsStop').onclick = doVcsStop;
+  $('btnVcsNodeSave').onclick = saveVcsNode;
+  $('btnVcsNodeCancel').onclick = closeVcsNodeModal;
+  $('btnVcsNodeCloseTop').onclick = closeVcsNodeModal;
+  $('btnVcsNodeProbe').onclick = probeVcsNodeInModal;
+  $('btnClearVcsLog').onclick = () => { state.vcsRawLogs = ''; $('vcsLogView').textContent = '— 版本管理日志已清空 —'; };
+  $('btnCopyVcsLog').onclick = () => copyToClipboard(state.vcsRawLogs, '已复制版本管理日志');
+  $('btnExpandVcsLog').onclick = () => $('vcsTerminalBox').classList.toggle('fullscreen');
+  $('vcsLogSearch').oninput = e => filterVcsLogView(e.target.value.trim());
+
   // 5. 弹窗控制
   $('btnClosePreview').onclick = () => $('previewModal').classList.add('hidden');
   $('btnClosePreviewTop').onclick = () => $('previewModal').classList.add('hidden');
@@ -1484,6 +2035,18 @@ async function init() {
     if (st.unityExes) fillUnitySelect(st.unityExes);
     state.outputs = Array.isArray(st.outputs) ? st.outputs : [];
     renderOutputs();
+    // 版本管理配置恢复
+    const vc = (st.config && st.config.vcs) || {};
+    state.vcsNodes = Array.isArray(vc.nodes)
+      ? vc.nodes.map(n => ({ id: String(n.id || ''), name: n.name || '', path: n.path || '', type: n.type || 'auto' }))
+      : [];
+    state.vcsGroups = Array.isArray(vc.groups)
+      ? vc.groups
+          .filter(g => g && (g.id || g.name))
+          .map(g => ({ id: String(g.id || ''), name: g.name || '分组', nodeIds: Array.isArray(g.nodeIds) ? g.nodeIds.map(String) : [] }))
+      : [];
+    renderVcs();
+    if (state.vcsNodes.length) doVcsProbe(state.vcsNodes.map(n => n.id));
     if ($('projectPath').value.trim()) {
       doScan();
     }
