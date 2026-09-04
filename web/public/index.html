@@ -334,7 +334,7 @@
           <div class="console-hero-header">
             <div class="hero-text">
               <h2>版本管理</h2>
-              <div class="sub-hero" id="vcsSummaryLine">SVN / Git 节点 · 分组管理 · 一键更新（更新前自动还原未提交更改）</div>
+              <div class="sub-hero" id="vcsSummaryLine">SVN / Git 节点 · 分组管理 · 指定分支 · 一键更新（还原未提交 → 远端在线才 pull / update）</div>
             </div>
             <div class="console-action-cluster">
               <button id="btnVcsAddNode" class="btn btn-hero-start">
@@ -673,6 +673,36 @@
           </div>
         </div>
 
+        <!-- 打包前版本管理自动更新 -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
+              <h3>打包前版本管理自动更新</h3>
+            </div>
+            <label class="switch-label mini">
+              <input type="checkbox" id="vcsPreUpdateEnabled">
+              <span class="switch-slider"></span>
+              <span class="switch-text">启用</span>
+            </label>
+          </div>
+          <div class="card-body">
+            <div class="field-grid">
+              <div class="field-group full">
+                <label class="field-label">启动批量打包前，先自动更新选定的版本管理分组（可多选）：</label>
+                <div class="chips-container" id="vcsPreGroupChips"></div>
+              </div>
+              <div class="field-group full">
+                <span class="hint-text" id="vcsPreHint">
+                  执行顺序：<strong>勾选的分组逐个更新（还原未提交 → 远端在线才 pull / update）→ 全部成功后才开始批量打包</strong>；
+                  任一节点失败或取消将终止打包。未选择分组则自动跳过该步骤。
+                  （分组请在「版本管理」页创建与维护）
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 高级子配置网格 (网络代理 + AI 分析) -->
         <div class="sub-cards-grid">
           <!-- 1. 网络代理 -->
@@ -946,6 +976,30 @@
             <div id="vcsNodeProbeResult" class="vcs-probe-result"></div>
           </div>
           <div class="field-group full">
+            <label for="vcsNodeBranch" class="field-label">
+              <span>分支（下拉选择）</span>
+              <span class="label-hint">（填好路径后点「检测类型」自动列出远端分支；留空 = 当前分支 / trunk）</span>
+            </label>
+            <select id="vcsNodeBranch" class="input-select">
+              <option value="">默认 · 当前分支 / trunk</option>
+            </select>
+          </div>
+          <div class="field-group full">
+            <label for="vcsNodeRevert" class="field-label">
+              <span>自定义还原指令</span>
+              <span class="label-hint">（留空 = 默认普通还原 <code>git reset --hard</code> / <code>svn revert -R .</code>；点击下方预设一键填入，Git 三种未提交状态见预设说明）</span>
+            </label>
+            <input type="text" id="vcsNodeRevert" class="input-text" placeholder="留空 = 默认普通还原">
+            <div class="chips-container" style="margin-top: 4px;">
+              <button class="chip chip-param" data-revert-preset="git checkout -- ." title="只还原「未暂存」改动，保留已暂存与未跟踪新文件">只还原未暂存</button>
+              <button class="chip chip-param" data-revert-preset="git reset --hard" title="还原「未暂存 + 已暂存」全部改动，保留未跟踪新文件">普通还原（已暂存+未暂存）</button>
+              <button class="chip chip-param" data-revert-preset="git reset --hard && git clean -fd" title="还原已暂存+未暂存改动，并删除未跟踪文件/目录">还原并清理未跟踪</button>
+              <button class="chip chip-param" data-revert-preset="git clean -fd" title="只删除未跟踪文件/目录（不动已提交与已修改内容）">仅清理未跟踪</button>
+              <button class="chip chip-param" data-revert-preset="" title="清空，恢复默认普通还原">清空（默认）</button>
+            </div>
+            <span class="hint-text">Git 语义：未暂存 = 工作区修改未 add；已暂存 = 已 <code>git add</code>；未跟踪 = 新建文件未 add。SVN 可填自定义脚本（如 <code>svn revert -R . --depth infinity</code>）。</span>
+          </div>
+          <div class="field-group full">
             <label for="vcsNodeType" class="field-label">版本控制类型</label>
             <select id="vcsNodeType" class="input-select">
               <option value="auto">自动检测（推荐 · Git / SVN）</option>
@@ -957,6 +1011,7 @@
             <div class="modal-hint-box" style="margin-top: 0;">
               ⚠️ <strong>更新前会自动还原未提交更改</strong>：<code>git reset --hard</code> / <code>svn revert -R .</code>
               （未跟踪 / 未版本化的新增文件不会删除）。<br>
+              🌐 <strong>刷新/更新时会检测远端服务器</strong>：远端<strong>不在线或没有远端服务器</strong>时，只执行还原、不执行 pull / update。<br>
               路径为空或未检测到 Git / SVN 工作副本的节点，更新时将被<strong>跳过</strong>，不执行任何操作。
             </div>
           </div>

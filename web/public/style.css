@@ -1590,9 +1590,27 @@ body {
 .vcs-st.pending      { color: var(--text-dim); border: 1px dashed var(--border-subtle); background: rgba(255, 255, 255, 0.02); }
 .vcs-st.running      { color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.12); }
 .vcs-st.ok           { color: #34d399; border: 1px solid rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.12); }
+.vcs-st.partial      { color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.12); }
 .vcs-st.fail         { color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.5); background: rgba(244, 63, 94, 0.12); }
 .vcs-st.unsupported  { color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.5); background: rgba(56, 189, 248, 0.12); }
 .vcs-st.cancelled    { color: var(--text-dim); border: 1px dashed var(--border-subtle); background: rgba(255, 255, 255, 0.02); }
+
+/* 远端服务器 / 分支状态小标签 */
+.vcs-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 0 5px;
+  letter-spacing: 0.2px;
+  line-height: 1.6;
+}
+.vcs-tag.remote-on    { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+.vcs-tag.remote-off   { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.35); }
+.vcs-tag.remote-none  { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); border: 1px dashed var(--border-subtle); }
+.vcs-tag.branch-ok    { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.35); }
+.vcs-tag.branch-warn  { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }
+.vcs-tag.branch-err   { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.35); }
 
 .vcs-badge-git  { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.3); }
 .vcs-badge-svn  { background: rgba(63, 118, 248, 0.15); color: #7da4fc; border: 1px solid rgba(63, 118, 248, 0.3); }

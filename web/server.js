@@ -1039,6 +1039,13 @@ async function startJob(req) {
   const buildNumberRaw = Number(req.buildNumber);
   const buildNumberAuto = !Number.isFinite(buildNumberRaw) || buildNumberRaw === -1;
 
+  // 打包前自动更新版本管理分组（可选）：更新失败 / 取消则终止打包
+  const vcsPreCfg = req.vcsBeforeBuild || config.vcsBeforeBuild || {};
+  const preEnabled = !!vcsPreCfg.enabled;
+  const preGroupIds = Array.isArray(vcsPreCfg.groupIds) ? vcsPreCfg.groupIds.map(String) : [];
+  const preNodes = preEnabled ? nodeIdsOfGroups(preGroupIds) : [];
+  const preGroupNames = preEnabled ? groupNamesOf(preGroupIds) : [];
+
   job = { state: 'starting', queue: profiles, index: 0, lines: [], progress: {}, outputs: [], child: null, exitCode: null, timer: null, stopOnError, cancel: false, lastFail: null };
   broadcast({ type: 'job-start', count: profiles.length });
 
@@ -1056,6 +1063,19 @@ async function startJob(req) {
   const run = async () => {
     job.state = 'running';
     try {
+      // 步骤 0：打包前版本管理自动更新（revert → 远端在线才 pull / update）→ 继续打包
+      if (preNodes.length) {
+        const pre = await runPreBuildVcsUpdate(preNodes, preGroupNames);
+        if (!pre.continue) {
+          broadcast({ type: 'job-end', ok: false,
+            reason: pre.reason === 'cancelled' ? 'vcsPreCancelled' : 'vcsPreFail',
+            message: pre.reason === 'cancelled' ? '打包前版本更新已取消' : '打包前版本更新存在失败项，已终止打包' });
+          return;
+        }
+      } else if (preEnabled) {
+        broadcast({ type: 'notice', text: '[版本管理] 打包前更新已启用，但所选分组为空（或未选择任何分组），跳过该步骤' });
+      }
+
       for (let i = 0; i < profiles.length; i++) {
         if (job.cancel) { broadcast({ type: 'job-end', ok: false, reason: 'cancelled' }); return; }
         job.index = i;
@@ -1125,6 +1145,7 @@ function stopJob() {
   if (!job || job.state === 'done') return { ok: false, error: '没有运行中的任务' };
   job.cancel = true;
   killChild();
+  if (vcs && vcs.preBuild) killProc(vcs.child); // 打包前更新阶段：一并强杀正在执行的 svn/git 进程
   return { ok: true };
 }
 
@@ -1418,7 +1439,10 @@ function runSync(cmd, args, cwd, timeoutMs) {
 }
 
 function gitInfo(abs) {
-  const out = { type: 'git', branch: '', revision: '', dirty: false, dirtyCount: 0, error: null };
+  const out = {
+    type: 'git', branch: '', revision: '', dirty: false, dirtyCount: 0, error: null,
+    hasRemote: false, remoteName: '', remoteOnline: false,
+  };
   const br = runSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], abs);
   if (br.error) { out.error = br.error; return out; }
   out.branch = String(br.stdout || '').trim() || 'HEAD';
@@ -1430,18 +1454,50 @@ function gitInfo(abs) {
     out.dirty = lines.length > 0;
     out.dirtyCount = lines.length;
   }
+  // 远端检测：是否有远端服务器 + 服务器是否在线
+  const rem = gitRemoteStatus(abs);
+  out.hasRemote = rem.hasRemote;
+  out.remoteName = rem.remoteName || '';
+  out.remoteOnline = rem.online;
   return out;
 }
 
+/** Git 远端连通性检测：无远端 → { hasRemote:false }；有远端则 ls-remote 验证在线 */
+function gitRemoteStatus(abs) {
+  const rem = runSync('git', ['remote'], abs, 8000);
+  if (rem.error) return { hasRemote: false, remoteName: '', online: false, reason: '读取 remote 失败: ' + rem.error };
+  const names = String(rem.stdout || '').split(/\r?\n/).filter(Boolean);
+  if (!names.length) return { hasRemote: false, remoteName: '', online: false, reason: '无远端服务器（只有本地仓库）' };
+  const remote = names[0];
+  const ls = runSync('git', ['ls-remote', '--heads', remote], abs, 12000);
+  const online = !ls.error && ls.status === 0;
+  return {
+    hasRemote: true, remoteName: remote, online,
+    reason: online ? '' : ('远端不可达: ' + String(ls.stderr || ls.error || '').trim().slice(0, 200)),
+  };
+}
+
 function svnInfo(abs) {
-  const out = { type: 'svn', branch: '', revision: '', dirty: false, dirtyCount: 0, error: null };
+  const out = {
+    type: 'svn', branch: '', root: '', revision: '', dirty: false, dirtyCount: 0, error: null,
+    hasRemote: true, remoteOnline: false,
+  };
   const info = runSync('svn', ['info', '--xml'], abs, 20000);
   if (info.error) { out.error = info.error; return out; }
   const text = String(info.stdout || '');
   const rev = text.match(/revision="(\d+)"/);
   const url = text.match(/<url>([^<]+)<\/url>/);
+  const root = text.match(/<root>([^<]+)<\/root>/);
   out.revision = rev ? rev[1] : '';
   out.branch = url ? decodeURIComponent(url[1]) : '';
+  out.root = root ? decodeURIComponent(root[1]) : '';
+  // 服务器连通性：对仓库 URL 做一次显式 info（工作副本本地 info 可能离线可用）
+  if (url) {
+    const on = runSync('svn', ['--non-interactive', 'info', url[1]], abs, 15000);
+    out.remoteOnline = !on.error && on.status === 0;
+  } else {
+    out.remoteOnline = false;
+  }
   const st = runSync('svn', ['status'], abs, 20000);
   if (!st.error && st.status === 0) {
     const lines = String(st.stdout || '').split(/\r?\n/).filter(l => l.trim());
@@ -1451,29 +1507,122 @@ function svnInfo(abs) {
   return out;
 }
 
+/**
+ * 解析 SVN 分支：
+ * 带协议前缀（http:// https:// svn:// file:// ...）= 直接作为完整 URL；
+ * 否则视为仓库内相对路径，拼到仓库根（root）下，如 branches/dev → <root>/branches/dev。
+ */
+function resolveSvnBranchUrl(branch, root, currentUrl) {
+  const b = String(branch || '').trim();
+  if (!b) return null;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(b)) return b;
+  const base = root || (currentUrl ? currentUrl.replace(/\/+(trunk|branches|tags)\/.*$/, '') : null);
+  if (!base) return null;
+  return base.replace(/\/+$/, '') + '/' + b.replace(/^\/+/, '');
+}
+
+function normalizeUrl(u) {
+  return String(u || '').replace(/\/+$/, '').replace(/\\/g, '/').toLowerCase();
+}
+
+/** Git 可用分支列表：本地分支优先，再补远端跟踪分支（去掉 remote 前缀、去重），供下拉选择 */
+function gitBranches(abs) {
+  const out = [];
+  const locals = [], remotes = new Set();
+  const r1 = runSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], abs, 10000);
+  if (!r1.error && r1.status === 0) {
+    for (const line of String(r1.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)) {
+      if (line !== 'HEAD') locals.push(line);
+    }
+  }
+  const r2 = runSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/remotes'], abs, 10000);
+  if (!r2.error && r2.status === 0) {
+    for (const line of String(r2.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)) {
+      const rest = line.split('/').slice(1).join('/'); // refs/remotes/origin/main -> main
+      if (rest && rest !== 'HEAD') remotes.add(rest);
+    }
+  }
+  const seen = new Set();
+  for (const b of locals.concat([...remotes])) {
+    if (!seen.has(b)) { seen.add(b); out.push(b); }
+  }
+  return out;
+}
+
+/** SVN 分支列表：在线时枚举 <仓库根>/branches，另附 trunk；当前 URL 本身是分支也补上 */
+function svnBranches(abs, info) {
+  const out = [];
+  if (info && info.remoteOnline && info.root) {
+    const ls = runSync('svn', ['--non-interactive', 'ls', info.root.replace(/\/+$/, '') + '/branches'], abs, 12000);
+    if (!ls.error && ls.status === 0) {
+      for (const line of String(ls.stdout || '').split(/\r?\n/).map(s => s.trim().replace(/\/+$/, '')).filter(Boolean)) {
+        if (line !== '.' && line !== '..') out.push(line);
+      }
+    }
+    if (!out.includes('trunk')) out.unshift('trunk');
+  }
+  if (info && info.branch) {
+    const m = String(info.branch).match(/\/(?:branches|tags)\/([^/]+)\/?$/);
+    if (m && !out.includes(m[1])) out.push(m[1]);
+    if (/\/trunk\/?$/.test(String(info.branch)) && !out.includes('trunk')) out.push('trunk');
+  }
+  return out;
+}
+
 function probeNode(node) {
   const abs = resolveVcsPath(node && node.path);
-  const base = { id: node.id, name: node.name || node.id, path: (node && node.path) || '' };
+  const base = {
+    id: node.id, name: node.name || node.id, path: (node && node.path) || '',
+    nodeBranch: String((node && node.branch) || '').trim(),
+    nodeRevert: String((node && node.revert) || '').trim(),
+  };
   if (!abs || !fs.existsSync(abs)) {
-    return Object.assign(base, { ok: true, type: 'none', branch: '', revision: '', dirty: false, dirtyCount: 0, error: '路径为空或不存在' });
+    return Object.assign(base, { ok: true, type: 'none', root: '', branch: '', revision: '', dirty: false, dirtyCount: 0, hasRemote: false, remoteOnline: false, branchMatched: null, branchExists: null, branches: [], error: '路径为空或不存在' });
   }
   const type = nodeType(node) || detectVcsType(abs);
   if (!type) {
-    return Object.assign(base, { ok: false, type: 'none', branch: '', revision: '', dirty: false, dirtyCount: 0, error: '未检测到 Git / SVN 工作副本（路径下无 .git 或 .svn）' });
+    return Object.assign(base, { ok: false, type: 'none', root: '', branch: '', revision: '', dirty: false, dirtyCount: 0, hasRemote: false, remoteOnline: false, branchMatched: null, branchExists: null, branches: [], error: '未检测到 Git / SVN 工作副本（路径下无 .git 或 .svn）' });
   }
   let info;
   try {
     info = type === 'git' ? gitInfo(abs) : svnInfo(abs);
   } catch (e) {
-    return Object.assign(base, { ok: false, type, error: '读取状态失败: ' + e.message });
+    return Object.assign(base, { ok: false, type, root: '', branch: '', revision: '', dirty: false, dirtyCount: 0, hasRemote: false, remoteOnline: false, branchMatched: null, branchExists: null, branches: [], error: '读取状态失败: ' + e.message });
   }
+
+  // 分支情况检查：当前分支 / 配置分支是否一致；远端是否在线；远端是否存在该分支
+  let branchMatched = null, branchExists = null;
+  if (base.nodeBranch) {
+    if (type === 'git') {
+      const b = base.nodeBranch;
+      branchMatched = String(info.branch || '').trim() === b;
+      if (info.remoteOnline && info.remoteName) {
+        const lsB = runSync('git', ['ls-remote', '--heads', info.remoteName, b], abs, 10000);
+        branchExists = !lsB.error && lsB.status === 0 && /refs\/heads\//.test(String(lsB.stdout || ''));
+      }
+    } else {
+      const targetUrl = resolveSvnBranchUrl(base.nodeBranch, info.root || null, info.branch || null);
+      branchMatched = targetUrl ? (normalizeUrl(targetUrl) === normalizeUrl(info.branch)) : false;
+      if (info.remoteOnline && targetUrl) {
+        const lsB = runSync('svn', ['--non-interactive', 'ls', targetUrl], abs, 10000);
+        branchExists = !lsB.error && lsB.status === 0;
+      }
+    }
+  }
+
   return Object.assign(base, {
     ok: !info.error,
     type,
+    root: info.root || '',
     branch: info.branch || '',
     revision: info.revision || '',
     dirty: !!info.dirty,
     dirtyCount: info.dirtyCount || 0,
+    hasRemote: info.hasRemote !== false,
+    remoteOnline: !!info.remoteOnline,
+    branchMatched,
+    branchExists,
+    branches: type === 'git' ? gitBranches(abs) : svnBranches(abs, info),
     error: info.error ? ('读取状态失败: ' + info.error) : null,
   });
 }
@@ -1545,7 +1694,45 @@ function vcsNodeResult(node, index, name, type, status, ok, message) {
 }
 
 /**
- * 更新单个节点：先还原未提交更改，再拉取 / 更新。
+ * 通过系统 shell 执行一条自定义命令（用于自定义还原指令）：
+ * Windows: cmd /d /s /c "<command>"；其它平台: sh -c "<command>"。
+ */
+function runVcsShell(node, index, label, command, cwd, timeoutMs) {
+  if (process.platform === 'win32') {
+    return runVcsProc(node, index, label, 'cmd.exe', ['/d', '/s', '/c', command], cwd, timeoutMs);
+  }
+  return runVcsProc(node, index, label, '/bin/sh', ['-c', command], cwd, timeoutMs);
+}
+
+/** 节点自定义还原指令（配了就用它，否则返回 null 走默认普通还原） */
+function nodeRevertCommand(node) {
+  const c = String((node && node.revert) || '').trim();
+  return c || null;
+}
+
+/**
+ * 健壮的 Git 还原：先确认有提交（ unborn HEAD 时无可还原内容），
+ * `git reset --hard` 失败（如文件被占用 / 只读）时回退尝试 `git checkout -- .`。
+ */
+async function gitRevert(node, index, abs, timeoutMs) {
+  const head = runSync('git', ['rev-parse', '--verify', 'HEAD'], abs, 8000);
+  if (head.error || head.status !== 0) {
+    pushVcsLine('（仓库尚无提交记录，无未提交内容可还原）\n');
+    return { ok: true, skipped: true };
+  }
+  const r1 = await runVcsProc(node, index, '还原未提交更改 (git reset --hard)', 'git', ['reset', '--hard'], abs, timeoutMs);
+  if (r1.ok) return { ok: true, method: 'reset --hard' };
+  const r2 = await runVcsProc(node, index, 'reset --hard 失败，尝试 git checkout -- .', 'git', ['checkout', '--', '.'], abs, timeoutMs);
+  if (r2.ok) return { ok: true, method: 'checkout -- .' };
+  pushVcsLine('（还原失败：可能有文件被占用（如已打开的编辑器 / 构建进程锁定）或处于只读状态，详见上方错误输出）\n');
+  return { ok: false, error: r2.error || r1.error || ('退出码 ' + r2.exitCode) };
+}
+
+/**
+ * 更新单个节点流程：
+ *   1) 一律先「还原未提交更改」（Git 健壮还原 / SVN revert -R .）
+ *   2) 检测远端：不在线或没有远端服务器 → 只执行 revert，不 pull / update
+ *   3) 在线且有远端 → 若指定分支则先切换分支（git checkout / svn switch），再 pull / update
  * 路径为空 → skipped（不执行任何操作）；未检测到工作副本 → skipped。
  */
 async function updateVcsNode(node, index, timeoutMs) {
@@ -1562,31 +1749,92 @@ async function updateVcsNode(node, index, timeoutMs) {
   }
 
   if (type === 'git') {
-    const r = await runVcsProc(node, index, '还原未提交更改', 'git', ['reset', '--hard'], abs, timeoutMs);
-    if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
-    if (!r.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '还原未提交更改失败' + (r.error ? '：' + r.error : '（退出码 ' + r.exitCode + '）'));
+    // 远端检测（在线才 pull；无远端 / 不在线 → 仅还原）
+    const rem = gitRemoteStatus(abs);
+    pushVcsLine(rem.hasRemote
+      ? `（远端 ${rem.remoteName}：${rem.online ? '在线' : '不可达，仅执行还原，跳过 pull'}）\n`
+      : '（无远端服务器，仅执行还原，跳过 pull）\n');
+
+    // 还原未提交更改：优先使用节点自定义还原指令，否则默认普通还原
+    const customRevert = nodeRevertCommand(node);
+    if (customRevert) {
+      const rr = await runVcsShell(node, index, '自定义还原指令', customRevert, abs, timeoutMs);
+      if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+      if (!rr.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '自定义还原指令执行失败（退出码 ' + rr.exitCode + '）');
+    } else {
+      const rv = await gitRevert(node, index, abs, timeoutMs);
+      if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+      if (!rv.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '还原未提交更改失败' + (rv.error ? '：' + rv.error : ''));
+    }
+
+    if (!rem.online) {
+      return vcsNodeResult(node, index, name, type, 'partial', true,
+        rem.hasRemote ? '远端不可达，仅还原未提交更改（未执行 pull）' : '无远端服务器，仅还原未提交更改（未执行 pull）');
+    }
+
+    // 指定分支：切换后再拉取
+    const branch = String(node.branch || '').trim();
+    if (branch) {
+      const cur = String(runSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], abs).stdout || '').trim();
+      if (cur !== branch) {
+        const co = await runVcsProc(node, index, `切换到分支 ${branch}`, 'git', ['checkout', branch], abs, timeoutMs);
+        if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+        if (!co.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '切换分支失败（本地与远端均无该分支？）');
+      }
+    }
     const u = await runVcsProc(node, index, '拉取最新代码', 'git', ['pull'], abs, timeoutMs);
     if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
-    if (!u.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '更新失败' + (u.error ? '：' + u.error : '（退出码 ' + u.exitCode + '）'));
-    return vcsNodeResult(node, index, name, type, 'ok', true, '更新成功');
+    if (!u.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '更新失败（退出码 ' + u.exitCode + '）');
+    return vcsNodeResult(node, index, name, type, 'ok', true, branch ? ('更新成功（分支 ' + branch + '）') : '更新成功');
   }
 
   // SVN：--non-interactive 避免凭据 / 交互提示挂起
-  const r = await runVcsProc(node, index, '还原未提交更改', 'svn', ['--non-interactive', 'revert', '-R', '.'], abs, timeoutMs);
-  if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
-  if (!r.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '还原未提交更改失败' + (r.error ? '：' + r.error : '（退出码 ' + r.exitCode + '）'));
+  const info = svnInfo(abs);
+  pushVcsLine(info.remoteOnline
+    ? `（SVN 服务器在线：${info.branch || ''}）\n`
+    : ('（SVN 服务器不可达，仅执行还原，跳过 update' + (info.error ? '：' + info.error : '') + '）\n'));
+
+  // 还原未提交更改：优先使用节点自定义还原指令，否则默认普通还原（svn revert -R .）
+  const customRevert = nodeRevertCommand(node);
+  if (customRevert) {
+    const rr = await runVcsShell(node, index, '自定义还原指令', customRevert, abs, timeoutMs);
+    if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+    if (!rr.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '自定义还原指令执行失败（退出码 ' + rr.exitCode + '）');
+  } else {
+    const rv = await runVcsProc(node, index, '还原未提交更改', 'svn', ['--non-interactive', 'revert', '-R', '.'], abs, timeoutMs);
+    if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+    if (!rv.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '还原未提交更改失败（退出码 ' + rv.exitCode + '）');
+  }
+
+  if (!info.remoteOnline) {
+    return vcsNodeResult(node, index, name, type, 'partial', true, 'SVN 服务器不可达，仅还原未提交更改（未执行 update）');
+  }
+
+  // 指定分支：svn switch 到分支 URL 后再 update
+  const branch = String(node.branch || '').trim();
+  if (branch) {
+    const targetUrl = resolveSvnBranchUrl(branch, info.root || null, info.branch || null);
+    if (targetUrl && normalizeUrl(targetUrl) !== normalizeUrl(info.branch)) {
+      const sw = await runVcsProc(node, index, `切换到分支 URL ${targetUrl}`, 'svn', ['--non-interactive', 'switch', targetUrl], abs, timeoutMs);
+      if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+      if (!sw.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '切换分支失败（分支 URL 不存在？）');
+    } else if (!targetUrl) {
+      pushVcsLine('（无法解析 SVN 分支 URL，跳过切换，按当前分支更新）\n');
+    }
+  }
   const u = await runVcsProc(node, index, '更新到最新版本', 'svn', ['--non-interactive', 'update'], abs, timeoutMs);
   if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
-  if (!u.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '更新失败' + (u.error ? '：' + u.error : '（退出码 ' + u.exitCode + '）'));
-  return vcsNodeResult(node, index, name, type, 'ok', true, '更新成功');
+  if (!u.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '更新失败（退出码 ' + u.exitCode + '）');
+  return vcsNodeResult(node, index, name, type, 'ok', true, branch ? '更新成功（已切换到指定分支）' : '更新成功');
 }
 
 function summarizeVcs(results) {
-  const s = { total: 0, ok: 0, fail: 0, skipped: 0, cancelled: 0 };
+  const s = { total: 0, ok: 0, partial: 0, fail: 0, skipped: 0, cancelled: 0 };
   for (const r of Object.values(results || {})) {
     s.total++;
     if (r.status === 'skipped') s.skipped++;
     else if (r.status === 'cancelled') s.cancelled++;
+    else if (r.status === 'partial') s.partial++;
     else if (r.ok) s.ok++;
     else s.fail++;
   }
@@ -1623,7 +1871,7 @@ async function startVcsUpdate(req) {
         if (vcs.cancel) { broadcast({ type: 'vcs-end', ok: false, reason: 'cancelled' }); return; }
       }
       const s = summarizeVcs(vcs.results);
-      pushVcsLine(`\n════════ 版本管理更新结束：成功 ${s.ok} ｜ 失败 ${s.fail} ｜ 跳过 ${s.skipped} ════════\n`);
+      pushVcsLine(`\n════════ 版本管理更新结束：更新成功 ${s.ok} ｜ 仅还原 ${s.partial} ｜ 失败 ${s.fail} ｜ 跳过 ${s.skipped} ════════\n`);
       broadcast({ type: 'vcs-end', ok: s.fail === 0 && s.cancelled === 0, summary: s });
     } catch (e) {
       console.error('[vcs] 异常:', e);
@@ -1642,6 +1890,70 @@ function stopVcs() {
   vcs.cancel = true;
   killProc(vcs.child);
   return { ok: true };
+}
+
+/* ── 打包前自动更新（构建钩子） ── */
+
+/** 取指定分组下的全部节点（保序、去重） */
+function nodeIdsOfGroups(groupIds) {
+  const vc = vcsConfig();
+  const gidSet = new Set((groupIds || []).map(String));
+  const ids = new Set();
+  for (const g of vc.groups) {
+    if (gidSet.has(String(g.id))) for (const id of (g.nodeIds || [])) ids.add(String(id));
+  }
+  return vc.nodes.filter(n => ids.has(String(n.id)));
+}
+
+function groupNamesOf(groupIds) {
+  const vc = vcsConfig();
+  const gidSet = new Set((groupIds || []).map(String));
+  return vc.groups.filter(g => gidSet.has(String(g.id))).map(g => g.name || g.id);
+}
+
+/**
+ * 在批量构建任务内执行「打包前版本更新」：
+ * 复用现有 vcs 更新机制（revert → 远端在线才 pull / update / 分支切换），
+ * 事件带 preBuild=true 经 SSE 推送；结束后 vcs 全局状态还原为 null。
+ * 返回 { continue } —— 任一节点失败或取消则终止打包。
+ */
+async function runPreBuildVcsUpdate(nodes, groupNames) {
+  const timeoutMs = 30 * 60000;
+  vcs = { state: 'running', nodes, index: 0, lines: [], results: {}, child: null, cancel: false, end: null, preBuild: true, startedAt: new Date().toISOString() };
+  broadcast({ type: 'notice', text: `[版本管理] 打包前自动更新启动（${groupNames.join('、') || '选定分组'}，共 ${nodes.length} 个节点）` });
+  pushVcsLine(`\n════════ 【打包前自动更新】分组：${groupNames.join('、') || '—'} ｜ 节点 ${nodes.length} 个 ════════\n`);
+  broadcast({ type: 'vcs-start', count: nodes.length, ids: nodes.map(n => n.id), preBuild: true, groupNames });
+  try {
+    for (let i = 0; i < nodes.length; i++) {
+      if (vcs.cancel || (job && job.cancel)) {
+        broadcast({ type: 'vcs-end', preBuild: true, ok: false, reason: 'cancelled' });
+        return { continue: false, reason: 'cancelled' };
+      }
+      vcs.index = i;
+      const node = nodes[i];
+      pushVcsLine(`\n════════ [${i + 1}/${nodes.length}] 节点：${node.name || node.id}（${node.path || '路径为空'}） ════════\n`);
+      broadcast({ type: 'vcs-node-start', index: i, nodeId: node.id, name: node.name || node.id, path: node.path || '', preBuild: true });
+      await updateVcsNode(node, i, timeoutMs);
+      if (vcs.cancel || (job && job.cancel)) {
+        broadcast({ type: 'vcs-end', preBuild: true, ok: false, reason: 'cancelled' });
+        return { continue: false, reason: 'cancelled' };
+      }
+    }
+    const s = summarizeVcs(vcs.results);
+    pushVcsLine(`\n════════ 打包前更新结束：更新成功 ${s.ok} ｜ 仅还原 ${s.partial} ｜ 失败 ${s.fail} ｜ 跳过 ${s.skipped} ════════\n`);
+    const ok = s.fail === 0 && s.cancelled === 0;
+    broadcast({ type: 'vcs-end', preBuild: true, ok, summary: s });
+    broadcast({ type: 'notice', text: ok
+      ? `[版本管理] 打包前更新完成：成功 ${s.ok}，仅还原 ${s.partial}，跳过 ${s.skipped}，继续打包`
+      : `[版本管理] 打包前更新存在失败（失败 ${s.fail}），终止打包` });
+    return { continue: ok, reason: ok ? null : 'vcsPreFail' };
+  } catch (e) {
+    console.error('[vcs] 打包前更新异常:', e);
+    broadcast({ type: 'vcs-end', preBuild: true, ok: false, reason: 'error', message: e.message });
+    return { continue: false, reason: 'error' };
+  } finally {
+    vcs = null; // 打包前更新不占用独立 vcs 状态
+  }
 }
 
 // ─────────────────────────── HTTP 服务 ───────────────────────────
@@ -1806,7 +2118,19 @@ const server = http.createServer(async (req, res) => {
           archiveDir: path.join(outBase, (body.successDir || '').trim() || cfg('successDir', '构建成功'), pr.name + '-<时间戳>'),
         };
       });
-      sendJson(res, 200, { ok: true, items, engine });
+      const vcsPreCfg = body.vcsBeforeBuild || config.vcsBeforeBuild || {};
+      const preEnabled = !!vcsPreCfg.enabled;
+      const preGroupIds = Array.isArray(vcsPreCfg.groupIds) ? vcsPreCfg.groupIds.map(String) : [];
+      const preNodes = preEnabled ? nodeIdsOfGroups(preGroupIds) : [];
+      sendJson(res, 200, {
+        ok: true, items, engine,
+        vcsBeforeBuild: {
+          enabled: preEnabled,
+          groups: groupNamesOf(preGroupIds),
+          nodeCount: preNodes.length,
+          nodeNames: preNodes.map(n => n.name || n.id),
+        },
+      });
       return;
     }
 
@@ -1872,7 +2196,7 @@ const server = http.createServer(async (req, res) => {
       let nodes = vcsConfig().nodes.slice();
       if (Array.isArray(body.nodes) && body.nodes.length) {
         // 临时探测（未保存的节点，用于添加节点弹窗内「检测类型」）
-        nodes = body.nodes.map((n, i) => ({ id: 'adhoc' + i, name: n.name || ('adhoc' + i), path: n.path, type: n.type || 'auto' }));
+        nodes = body.nodes.map((n, i) => ({ id: 'adhoc' + i, name: n.name || ('adhoc' + i), path: n.path, branch: n.branch, revert: n.revert, type: n.type || 'auto' }));
       } else if (Array.isArray(body.ids) && body.ids.length) {
         const set = new Set(body.ids.map(String));
         nodes = nodes.filter(n => set.has(String(n.id)));
