@@ -1581,46 +1581,60 @@ function clearVcsDragOver() {
   document.querySelectorAll('.vcs-group-card, #vcsUngroupedCard').forEach(el => el.classList.remove('drag-over'));
 }
 
-function bindVcsDnD() {
-  document.querySelectorAll('.vcs-node[draggable="true"]').forEach(el => {
-    el.addEventListener('dragstart', e => {
-      if (e.target.closest('button, input, select, textarea')) { e.preventDefault(); return; }
-      const id = el.dataset.nid;
-      state.vcsDragId = id;
-      e.dataTransfer.setData('text/plain', id);
-      e.dataTransfer.effectAllowed = 'move';
-      el.classList.add('dragging');
-    });
-    el.addEventListener('dragend', () => {
-      state.vcsDragId = null;
-      el.classList.remove('dragging');
-      clearVcsDragOver();
-    });
+/**
+ * 版本管理拖拽：在 tab-pane-vcs 根元素上一次性事件委托（防止内层节点/卡片重建导致监听器重复累积，
+ * 未分组卡片是静态元素，逐次 bindDrop 会越叠越多，一次 drop 弹出多个 toast）。
+ */
+function initVcsDnD() {
+  const root = $('tab-pane-vcs');
+  if (!root || root.__vcsDnDBound) return;
+  root.__vcsDnDBound = true;
+
+  root.addEventListener('dragstart', e => {
+    const n = e.target.closest('.vcs-node[draggable="true"]');
+    if (!n) return;
+    if (e.target.closest('button, input, select, textarea')) { e.preventDefault(); return; }
+    state.vcsDragId = n.dataset.nid;
+    e.dataTransfer.setData('text/plain', n.dataset.nid);
+    e.dataTransfer.effectAllowed = 'move';
+    n.classList.add('dragging');
   });
 
-  const bindDrop = (el, groupId) => {
-    el.addEventListener('dragover', e => {
-      if (!state.vcsDragId) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      el.classList.add('drag-over');
-    });
-    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
-    el.addEventListener('drop', e => {
-      e.preventDefault();
-      el.classList.remove('drag-over');
-      const id = state.vcsDragId || e.dataTransfer.getData('text/plain');
-      if (id) moveVcsNodeToGroup(id, groupId);
-    });
-  };
+  root.addEventListener('dragend', () => {
+    state.vcsDragId = null;
+    root.querySelectorAll('.vcs-node.dragging').forEach(el => el.classList.remove('dragging'));
+    clearVcsDragOver();
+  });
 
-  document.querySelectorAll('.vcs-group-card').forEach(card => bindDrop(card, card.dataset.gid));
-  const un = $('vcsUngroupedCard');
-  if (un) bindDrop(un, null);
+  root.addEventListener('dragover', e => {
+    const t = e.target.closest('.vcs-group-card, #vcsUngroupedCard');
+    if (!t || !state.vcsDragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    t.classList.add('drag-over');
+  });
+
+  root.addEventListener('dragleave', e => {
+    const t = e.target.closest('.vcs-group-card, #vcsUngroupedCard');
+    if (t && (!e.relatedTarget || !t.contains(e.relatedTarget))) t.classList.remove('drag-over');
+  });
+
+  root.addEventListener('drop', e => {
+    const t = e.target.closest('.vcs-group-card, #vcsUngroupedCard');
+    if (!t || !state.vcsDragId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    t.classList.remove('drag-over');
+    const groupId = t.id === 'vcsUngroupedCard' ? null : t.dataset.gid;
+    moveVcsNodeToGroup(state.vcsDragId, groupId);
+  });
 }
 
 function moveVcsNodeToGroup(nodeId, groupId) {
   if (!vcsNodeById(nodeId)) return;
+  // 成员关系是否已变化（拖回原处 / 未分组拖到未分组 = 无变化，不弹提示）
+  const inGroup = vcsGroupOf(nodeId);
+  const wasHere = groupId ? (inGroup && inGroup.id === groupId) : !inGroup;
   // 先从所有分组中移除
   state.vcsGroups.forEach(g => {
     g.nodeIds = (g.nodeIds || []).filter(x => String(x) !== String(nodeId));
@@ -1634,6 +1648,7 @@ function moveVcsNodeToGroup(nodeId, groupId) {
   }
   renderVcs();
   scheduleVcsSave();
+  if (wasHere) return;
   showToast(groupId ? '节点已归入分组' : '节点已移出分组', 'ok');
 }
 
@@ -1693,7 +1708,6 @@ function renderVcs() {
   if (eh) eh.classList.toggle('hidden', state.vcsGroups.length > 0);
 
   bindVcsEvents();
-  bindVcsDnD();
   renderVcsPreChips();
 }
 
@@ -2072,6 +2086,7 @@ async function init() {
   renderCheckEnvChips();
 
   // 版本管理按钮
+  initVcsDnD(); // 拖拽事件委托：仅注册一次，避免监听器累积
   $('btnVcsAddNode').onclick = () => openVcsNodeModal(null);
   $('btnVcsAddGroup').onclick = addVcsGroup;
   $('btnVcsUpdateAll').onclick = () => doVcsUpdate(state.vcsNodes.map(n => n.id), '更新全部节点');
