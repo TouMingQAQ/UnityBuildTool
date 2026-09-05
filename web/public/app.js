@@ -19,8 +19,14 @@ const state = {
   config: {},
   profiles: [],        // 扫描结果（全部）
   filter: 'all',
-  queue: [],           // 选中的 profile 引用（顺序即打包顺序）
-  profileConfigs: {},  // assetPath -> { customBuildDir, nameTemplate, dev, buildAddressables, addressablesMethod, androidBuildKind, keystoreName, keyaliasName, keystorePass, keyaliasPass, remember }
+  queue: [],           // 当前构建执行的 profile/node 列表
+  profileConfigs: {},  // 兼容旧配置：assetPath -> config
+  buildNodes: [],      // 打包节点列表：[{ id, name, profileAssetPath, target, targetName, ... }]
+  buildGroups: [],     // 打包分组列表：[{ id, name, nodeIds }]
+  activeBuildGroupId: 'all', // 当前选定的打包组（'all' 或 group.id）
+  buildDragNodeId: null,     // 正在拖动的打包节点 id
+  buildEditNodeId: null,     // 当前配置弹窗编辑的打包节点 id（null 为新增）
+  buildEditTargetGroupId: null, // 新增节点默认加入的组 id
   job: null,           // 最近一次 SSE 状态
   jobProgress: null,
   outputs: [],         // 构建产物列表
@@ -126,11 +132,78 @@ function setInfo(text, cls) {
   el.classList.remove('hidden');
 }
 
-/* ─────────────── 配置读写与表单同步 ─────────────── */
+/* ─────────────── 辅助函数：ID 与打包节点/分组查找 ─────────────── */
+
+function generateId(prefix = "id") {
+  return prefix + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+}
+
+function buildNodeById(id) {
+  return state.buildNodes.find(n => String(n.id) === String(id));
+}
+
+function buildGroupById(id) {
+  return state.buildGroups.find(g => String(g.id) === String(id));
+}
+
+function buildGroupOf(nodeId) {
+  return state.buildGroups.find(g => (g.nodeIds || []).some(x => String(x) === String(nodeId))) || null;
+}
+
+function buildUngrouped() {
+  return state.buildNodes.filter(n => !buildGroupOf(n.id));
+}
+
+function resolveActiveBuildNodes() {
+  if (state.activeBuildGroupId === "all") {
+    const list = [];
+    const seen = new Set();
+    for (const g of state.buildGroups) {
+      for (const nid of (g.nodeIds || [])) {
+        if (!seen.has(nid)) {
+          seen.add(nid);
+          const n = buildNodeById(nid);
+          if (n) list.push(n);
+        }
+      }
+    }
+    for (const n of buildUngrouped()) {
+      if (!seen.has(n.id)) {
+        seen.add(n.id);
+        list.push(n);
+      }
+    }
+    return list;
+  }
+  const g = buildGroupById(state.activeBuildGroupId);
+  if (g) {
+    return (g.nodeIds || []).map(buildNodeById).filter(Boolean);
+  }
+  if (state.buildGroups.length) {
+    return (state.buildGroups[0].nodeIds || []).map(buildNodeById).filter(Boolean);
+  }
+  return state.buildNodes.slice();
+}
+
+function syncBuildNodesWithProfiles() {
+  state.buildNodes.forEach(n => {
+    const p = state.profiles.find(x => x.assetPath === n.profileAssetPath);
+    if (p) {
+      n.target = p.target;
+      n.targetName = p.targetName;
+      n.productName = p.productName;
+      n.bundleVersion = p.bundleVersion;
+      n.sceneCount = p.sceneCount;
+      n.absPath = p.absPath;
+    }
+  });
+}
+
+/* ─────────────��─ 配置读写与表单同步 ─────────────── */
 
 let saveTimer = null;
 function collectConfig() {
-  const mode = document.querySelector('input[name="engineMode"]:checked')?.value || 'batchmode';
+  const mode = document.querySelector('input[name="engineMode"]:checked')?.value || "batchmode";
   const engine = {
     mode,
     unityExe: $('unityExe').value.trim(),
@@ -138,17 +211,18 @@ function collectConfig() {
     cliPath: $('cliPath').value.trim(),
     template: $('template').value,
   };
+  const activeNodes = resolveActiveBuildNodes();
   return {
     projectPath: $('projectPath').value.trim(),
     profileDir: $('profileDir').value.trim(),
     engine,
     artifactNameTemplate: $('artifactNameTemplate').value.trim(),
     outputBase: $('outputBase').value.trim(),
-    successDir: $('successDir').value.trim() || '构建成功',
+    successDir: $('successDir').value.trim() || "构建成功",
     defaultAutoZip: $('defaultAutoZip').checked,
     defaultDevBuild: $('defaultDevBuild').checked,
     defaultBuildAddressables: $('defaultBuildAddressables').checked,
-    defaultAndroidBuildKind: $('defaultAndroidBuildKind').value || 'apk',
+    defaultAndroidBuildKind: $('defaultAndroidBuildKind').value || "apk",
     stopOnError: $('stopOnError').checked,
     proxy: {
       enabled: $('proxyEnabled').checked,
@@ -161,18 +235,21 @@ function collectConfig() {
       model: $('aiModel').value.trim(),
       apiKey: $('aiApiKey').value.trim(),
     },
-    buildNumber: $('buildNumber').value.trim() || '-1',
+    buildNumber: $('buildNumber').value.trim() || "-1",
     profileConfigs: state.profileConfigs,
+    buildNodes: state.buildNodes,
+    buildGroups: state.buildGroups,
+    activeBuildGroupId: state.activeBuildGroupId,
     check: {
-      projectPath: $('checkProjectPath')?.value.trim() ?? '',
-      unityExe: $('checkUnityExe')?.value.trim() ?? '',
+      projectPath: $('checkProjectPath')?.value.trim() ?? "",
+      unityExe: $('checkUnityExe')?.value.trim() ?? "",
       targets: state.checkTargets,
       timeoutMinutes: Number($('checkTimeout')?.value) || 20,
       nographics: $('checkNographics')?.checked ?? true,
     },
-    queue: state.queue.map(p => ({
+    queue: activeNodes.map(p => ({
       name: p.name, target: p.target, targetName: p.targetName,
-      assetPath: p.assetPath, absPath: p.absPath,
+      assetPath: p.profileAssetPath || p.assetPath, absPath: p.absPath,
       productName: p.productName, subtarget: p.subtarget, sceneCount: p.sceneCount,
       bundleVersion: p.bundleVersion != null ? p.bundleVersion : null,
     })),
@@ -184,66 +261,148 @@ function scheduleSave() {
   saveTimer = setTimeout(async () => {
     state.config = collectConfig();
     try {
-      await api('/api/config', state.config);
+      await api("/api/config", state.config);
     } catch (e) {
-      console.warn('save config:', e.message);
+      console.warn("save config:", e.message);
     }
   }, 500);
 }
 
 function fillForm(cfg) {
   if (!cfg) return;
-  $('projectPath').value = cfg.projectPath || '';
-  $('profileDir').value = cfg.profileDir || '';
+  $('projectPath').value = cfg.projectPath || "";
+  $('profileDir').value = cfg.profileDir || "";
   const e = cfg.engine || {};
-  const checkedRadio = document.querySelector(`input[name="engineMode"][value="${e.mode || 'batchmode'}"]`);
+  const checkedRadio = document.querySelector(`input[name="engineMode"][value="${e.mode || "batchmode"}"]`);
   if (checkedRadio) checkedRadio.checked = true;
-  $('unityExe').value = e.unityExe || '';
+  $('unityExe').value = e.unityExe || "";
   $('nographics').checked = e.nographics !== false;
-  $('cliPath').value = e.cliPath || '';
-  $('template').value = e.template || '';
-  $('artifactNameTemplate').value = cfg.artifactNameTemplate || '{Product}_{Platform}_v{Version}_b{VersionCode}_{Time}{Dev}';
-  $('outputBase').value = cfg.outputBase || '';
-  $('successDir').value = cfg.successDir || '构建成功';
+  $('cliPath').value = e.cliPath || "";
+  $('template').value = e.template || "";
+  $('artifactNameTemplate').value = cfg.artifactNameTemplate || "{Product}_{Platform}_v{Version}_b{VersionCode}_{Time}{Dev}";
+  $('outputBase').value = cfg.outputBase || "";
+  $('successDir').value = cfg.successDir || "构建成功";
   $('defaultAutoZip').checked = cfg.defaultAutoZip !== false;
   $('defaultDevBuild').checked = !!cfg.defaultDevBuild;
   $('defaultBuildAddressables').checked = !!cfg.defaultBuildAddressables;
-  $('defaultAndroidBuildKind').value = ['apk', 'aab', 'gradleProject'].includes(cfg.defaultAndroidBuildKind) ? cfg.defaultAndroidBuildKind : 'apk';
+  $('defaultAndroidBuildKind').value = ["apk", "aab", "gradleProject"].includes(cfg.defaultAndroidBuildKind) ? cfg.defaultAndroidBuildKind : "apk";
   $('stopOnError').checked = cfg.stopOnError !== false;
   const px = cfg.proxy || {};
   $('proxyEnabled').checked = !!px.enabled;
-  $('proxyHost').value = px.host || '127.0.0.1';
-  $('proxyPort').value = px.port || '10808';
+  $('proxyHost').value = px.host || "127.0.0.1";
+  $('proxyPort').value = px.port || "10808";
   const ai = cfg.ai || {};
   $('aiEnabled').checked = !!ai.enabled;
-  $('aiBaseUrl').value = ai.baseUrl || 'https://api.deepseek.com';
-  $('aiModel').value = ai.model || 'deepseek-chat';
-  $('aiApiKey').value = ai.apiKey || '';
-  $('buildNumber').value = cfg.buildNumber != null ? cfg.buildNumber : '-1';
-  state.profileConfigs = (cfg.profileConfigs && typeof cfg.profileConfigs === 'object') ? cfg.profileConfigs : {};
+  $('aiBaseUrl').value = ai.baseUrl || "https://api.deepseek.com";
+  $('aiModel').value = ai.model || "deepseek-chat";
+  $('aiApiKey').value = ai.apiKey || "";
+  $('buildNumber').value = cfg.buildNumber != null ? cfg.buildNumber : "-1";
+  state.profileConfigs = (cfg.profileConfigs && typeof cfg.profileConfigs === "object") ? cfg.profileConfigs : {};
+
   // 环境编译检测配置恢复
   const ck = cfg.check || {};
-  $('checkProjectPath').value = ck.projectPath || cfg.projectPath || '';
-  $('checkUnityExe').value = ck.unityExe || (cfg.engine && cfg.engine.unityExe) || '';
+  $('checkProjectPath').value = ck.projectPath || cfg.projectPath || "";
+  $('checkUnityExe').value = ck.unityExe || (cfg.engine && cfg.engine.unityExe) || "";
   $('checkTimeout').value = ck.timeoutMinutes || 20;
   $('checkNographics').checked = ck.nographics !== false;
   if (Array.isArray(ck.targets) && ck.targets.length) {
     state.checkTargets = ck.targets.filter(t => ENV_LINES.some(e => e.target === Number(t))).map(Number);
   }
   renderCheckEnvChips();
-  if (Array.isArray(cfg.queue) && cfg.queue.length) {
-    state.queue = cfg.queue;
-    renderQueue();
+
+  // 构建节点与分组配置恢复（支持从旧 queue 自动平滑迁移）
+  if (Array.isArray(cfg.buildNodes)) {
+    state.buildNodes = cfg.buildNodes.map(n => ({
+      id: String(n.id || generateId("bn")),
+      name: n.name || "",
+      profileAssetPath: n.profileAssetPath || n.assetPath || "",
+      target: n.target,
+      targetName: n.targetName,
+      productName: n.productName,
+      bundleVersion: n.bundleVersion,
+      sceneCount: n.sceneCount,
+      absPath: n.absPath,
+      customBuildDir: n.customBuildDir || "",
+      nameTemplate: n.nameTemplate || "",
+      autoZip: n.autoZip != null ? n.autoZip : true,
+      dev: !!n.dev,
+      buildAddressables: !!n.buildAddressables,
+      addressablesMethod: n.addressablesMethod || "",
+      androidBuildKind: n.androidBuildKind || "apk",
+      keystoreName: n.keystoreName || "",
+      keyaliasName: n.keyaliasName || "",
+      keystorePass: n.keystorePass || "",
+      keyaliasPass: n.keyaliasPass || "",
+      remember: !!n.remember,
+      vcsGroupIds: Array.isArray(n.vcsGroupIds) ? n.vcsGroupIds.slice() : [],
+    }));
+  } else if (Array.isArray(cfg.queue) && cfg.queue.length) {
+    const migratedNodes = [];
+    const nodeIds = [];
+    cfg.queue.forEach((q, idx) => {
+      const nid = "bn_" + (idx + 1) + "_" + Math.random().toString(36).slice(2, 7);
+      const c = (cfg.profileConfigs && cfg.profileConfigs[q.assetPath]) || {};
+      migratedNodes.push({
+        id: nid,
+        name: q.name || "Profile " + (idx + 1),
+        profileAssetPath: q.assetPath || "",
+        target: q.target,
+        targetName: q.targetName,
+        productName: q.productName,
+        bundleVersion: q.bundleVersion,
+        sceneCount: q.sceneCount,
+        absPath: q.absPath,
+        customBuildDir: c.customBuildDir || "",
+        nameTemplate: c.nameTemplate || "",
+        autoZip: c.autoZip != null ? c.autoZip : true,
+        dev: !!c.dev,
+        buildAddressables: !!c.buildAddressables,
+        addressablesMethod: c.addressablesMethod || "",
+        androidBuildKind: c.androidBuildKind || "apk",
+        keystoreName: c.keystoreName || "",
+        keyaliasName: c.keyaliasName || "",
+        keystorePass: c.keystorePass || "",
+        keyaliasPass: c.keyaliasPass || "",
+        remember: !!c.remember,
+        vcsGroupIds: Array.isArray(c.vcsGroupIds) ? c.vcsGroupIds.slice() : [],
+      });
+      nodeIds.push(nid);
+    });
+    state.buildNodes = migratedNodes;
+    state.buildGroups = [{
+      id: "bg_default",
+      name: "默认构建组",
+      nodeIds,
+    }];
+  } else {
+    state.buildNodes = [];
   }
+
+  if (Array.isArray(cfg.buildGroups)) {
+    state.buildGroups = cfg.buildGroups.filter(g => g && (g.id || g.name)).map(g => ({
+      id: String(g.id || generateId("bg")),
+      name: g.name || "构建组",
+      nodeIds: Array.isArray(g.nodeIds) ? g.nodeIds.map(String) : [],
+    }));
+  } else if (!state.buildGroups.length && state.buildNodes.length) {
+    state.buildGroups = [{
+      id: "bg_default",
+      name: "默认构建组",
+      nodeIds: state.buildNodes.map(n => n.id),
+    }];
+  }
+
+  state.activeBuildGroupId = cfg.activeBuildGroupId || (state.buildGroups[0] ? state.buildGroups[0].id : "all");
+  renderBuildGroups();
   toggleEnginePanels();
 }
 
 /* ─────────────── 引擎面板切换 ─────────────── */
 
 function toggleEnginePanels() {
-  const mode = document.querySelector('input[name="engineMode"]:checked')?.value || 'batchmode';
-  $('panel-batchmode').classList.toggle('hidden', mode !== 'batchmode');
-  $('panel-template').classList.toggle('hidden', mode !== 'template');
+  const mode = document.querySelector('input[name="engineMode"]:checked')?.value || "batchmode";
+  $('panel-batchmode').classList.toggle("hidden", mode !== "batchmode");
+  $('panel-template').classList.toggle("hidden", mode !== "template");
 }
 
 /* ─────────────── 扫描 Build Profile ─────────────── */
@@ -251,251 +410,521 @@ function toggleEnginePanels() {
 async function doScan() {
   const projectPath = $('projectPath').value.trim();
   if (!projectPath) {
-    setInfo('请先填写 Unity 项目路径', 'err');
-    showToast('请先填写 Unity 项目路径', 'err');
+    setInfo("请先填写 Unity 项目路径", "err");
+    showToast("请先填写 Unity 项目路径", "err");
     return;
   }
-  setInfo('正在扫描项目中的 Build Profile…');
+  setInfo("正在扫描项目中的 Build Profile…");
   $('btnScan').disabled = true;
   try {
-    const r = await api('/api/scan', { projectPath, profileDir: $('profileDir').value.trim() });
+    const r = await api("/api/scan", { projectPath, profileDir: $('profileDir').value.trim() });
     state.profiles = r.profiles || [];
-    state.filter = 'all';
-    const ver = r.unityVersion ? r.unityVersion : '（未识别）';
-    const isU6 = r.unityVersion && r.unityVersion.startsWith('6000');
+    syncBuildNodesWithProfiles();
+    const ver = r.unityVersion ? r.unityVersion : "（未识别）";
+    const isU6 = r.unityVersion && r.unityVersion.startsWith("6000");
     setInfo(
-      `✓ 项目路径: ${r.projectAbs}\n✓ Unity 版本: ${ver}${isU6 ? ' (Unity 6)' : '  ⚠ 非 6000.x，可能不是 Unity 6'} | 发现有效 Profile: ${r.profiles.length} 个`,
-      isU6 ? 'ok' : ''
+      `✓ 项目路径: ${r.projectAbs}\n✓ Unity 版本: ${ver}${isU6 ? " (Unity 6)" : "  ⚠ 非 6000.x，可能不是 Unity 6"} | 发现有效 Profile: ${r.profiles.length} 个`,
+      isU6 ? "ok" : ""
     );
-    showToast(`扫描成功，发现 ${r.profiles.length} 个 Profile`, 'ok');
+    showToast(`扫描成功，发现 ${r.profiles.length} 个 Profile`, "ok");
     const ig = (r.ignored || []);
-    $('ignoredInfo').textContent = ig.length
-      ? `已忽略目标不在支持范围内的 Profile：${ig.map(i => `${i.name}(${i.targetName})`).join('、')}`
-      : '';
-    renderProfiles();
+    if ($('ignoredInfo')) {
+      $('ignoredInfo').textContent = ig.length
+        ? `已忽略目标不在支持范围内的 Profile：${ig.map(i => `${i.name}(${i.targetName})`).join("、")}`
+        : "";
+    }
+    renderBuildGroups();
   } catch (e) {
-    setInfo('扫描失败：' + e.message, 'err');
-    showToast('扫描失败：' + e.message, 'err');
+    setInfo("扫描失败：" + e.message, "err");
+    showToast("扫描失败：" + e.message, "err");
   } finally {
     $('btnScan').disabled = false;
   }
 }
 
-function renderProfiles() {
-  const tb = $('profileBody');
-  if (!tb) return;
-  const list = state.profiles.filter(p => {
-    if (state.filter === 'all') return true;
-    if (state.filter === 'android') return p.target === 13;
-    if (state.filter === 'win') return p.target === 19 || p.target === 5;
-    if (state.filter === 'ios') return p.target === 9;
-    return true;
-  });
+/* ─────────────── 构建节点与分组渲染及操作 ─────────────── */
 
-  if (!list.length) {
-    tb.innerHTML = `<tr><td colspan="4" class="empty-state">没有符合筛选条件的 Profile</td></tr>`;
-    return;
+function addBuildGroup() {
+  const count = state.buildGroups.length + 1;
+  const newGroup = {
+    id: generateId("bg"),
+    name: `构建组 ${count}`,
+    nodeIds: [],
+  };
+  state.buildGroups.push(newGroup);
+  state.activeBuildGroupId = newGroup.id;
+  renderBuildGroups();
+  scheduleSave();
+  showToast(`已创建「${newGroup.name}」`, "ok");
+}
+
+function deleteBuildGroup(id) {
+  const g = buildGroupById(id);
+  if (!g) return;
+  if (!confirm(`确定删除构建组「${g.name || id}」？组内节点将保留并移至未分组。`)) return;
+  state.buildGroups = state.buildGroups.filter(x => String(x.id) !== String(id));
+  if (state.activeBuildGroupId === id) {
+    state.activeBuildGroupId = state.buildGroups.length ? state.buildGroups[0].id : "all";
   }
+  renderBuildGroups();
+  scheduleSave();
+  showToast(`已删除构建组「${g.name}」`, "info");
+}
 
-  tb.innerHTML = list.map(p => {
-    const inQueue = state.queue.some(q => q.assetPath === p.assetPath);
-    const isAndroid = p.target === 13;
-    const isIOS = p.target === 9;
-    const badgeClass = isAndroid ? 'android' : isIOS ? 'ios' : 'win';
-    const targetLabel = isAndroid ? 'Android' : isIOS ? 'iOS' : 'Windows';
-    return `<tr>
-      <td class="name">
-        <div>${esc(p.name)}</div>
-        <div class="mono">${esc(p.assetPath)}</div>
-      </td>
-      <td>
-        <span class="badge ${badgeClass}">${targetLabel}</span>
-      </td>
-      <td style="font-family: var(--font-mono); color: var(--text-muted);">${p.sceneCount}</td>
-      <td style="text-align: right;">
-        ${inQueue
-          ? `<button class="btn btn-ghost btn-xs" disabled>已在队列</button>`
-          : `<button class="btn btn-primary btn-xs" data-add="${esc(p.assetPath)}">＋ 添加</button>`}
-      </td>
-    </tr>`;
-  }).join('');
-
-  tb.querySelectorAll('button[data-add]').forEach(b => {
-    b.onclick = () => {
-      const p = state.profiles.find(x => x.assetPath === b.dataset.add);
-      if (p) addToQueue(p);
-    };
+function deleteBuildNode(id) {
+  const n = buildNodeById(id);
+  if (!n) return;
+  if (!confirm(`确定删除打包节点「${n.name || "未命名"}」？`)) return;
+  state.buildNodes = state.buildNodes.filter(x => String(x.id) !== String(id));
+  state.buildGroups.forEach(g => {
+    g.nodeIds = (g.nodeIds || []).filter(x => String(x) !== String(id));
   });
-}
-
-/* ─────────────── 构建队列操作 ─────────────── */
-
-function addToQueue(p) {
-  if (!p || state.queue.some(q => q.assetPath === p.assetPath)) return;
-  state.queue.push(p);
-  renderQueue();
-  renderProfiles();
+  renderBuildGroups();
   scheduleSave();
-  showToast(`已添加「${p.name}」到队列`, 'ok');
+  showToast(`已删除节点「${n.name}」`, "info");
 }
 
-function removeFromQueue(assetPath) {
-  state.queue = state.queue.filter(q => q.assetPath !== assetPath);
-  renderQueue();
-  renderProfiles();
+function cloneBuildNode(id) {
+  const src = buildNodeById(id);
+  if (!src) return;
+  const newId = generateId("bn");
+  const clone = JSON.parse(JSON.stringify(src));
+  clone.id = newId;
+  clone.name = (src.name || "节点") + " (副本)";
+  state.buildNodes.push(clone);
+  const grp = buildGroupOf(id);
+  if (grp) {
+    const idx = grp.nodeIds.indexOf(id);
+    grp.nodeIds.splice(idx + 1, 0, newId);
+  }
+  renderBuildGroups();
   scheduleSave();
+  showToast(`已复制节点「${clone.name}」`, "ok");
 }
 
-function moveQueue(idx, dir) {
-  const j = idx + dir;
-  if (j < 0 || j >= state.queue.length) return;
-  const [it] = state.queue.splice(idx, 1);
-  state.queue.splice(j, 0, it);
-  renderQueue();
-  scheduleSave();
-}
-
-function renderQueue() {
-  const ul = $('queueList');
-  const count = state.queue.length;
-  if ($('queueCount')) $('queueCount').textContent = `共 ${count} 个`;
-  if ($('sidebarQueueCount')) $('sidebarQueueCount').textContent = String(count);
-  if ($('homeQueueSummary')) $('homeQueueSummary').textContent = count ? `当前构建队列：${count} 个 Profile（按序执行）` : '当前队列为空，请在「Profile 与排期」中添加';
-
-  if (!ul) return;
-  if (!count) {
-    ul.innerHTML = `<li class="empty-state">队列为空，请从左侧添加 Profile</li>`;
-  } else {
-    ul.innerHTML = state.queue.map((p, i) => {
-      const isAndroid = p.target === 13;
-      const isIOS = p.target === 9;
-      const badgeClass = isAndroid ? 'android' : isIOS ? 'ios' : 'win';
-      const targetLabel = isAndroid ? 'Android' : isIOS ? 'iOS' : 'Win';
-      const cfg = state.profileConfigs[p.assetPath] || {};
-      const isDev = cfg.dev != null ? cfg.dev : $('defaultDevBuild')?.checked;
-      const isAddr = cfg.buildAddressables != null ? cfg.buildAddressables : $('defaultBuildAddressables')?.checked;
-      const isAutoZip = cfg.autoZip != null ? cfg.autoZip : $('defaultAutoZip')?.checked;
-      const isShared = !!cfg.customBuildDir;
-      const isSigned = isAndroid && (cfg.keystoreName || cfg.keystorePass);
-      const bkind = cfg.androidBuildKind || $('defaultAndroidBuildKind')?.value || 'apk';
-
-      const tags = [];
-      if (isDev) tags.push(`<span class="tag-badge dev" title="DEV 调试包">DEV</span>`);
-      if (isAddr) tags.push(`<span class="tag-badge addr" title="构建 Addressables">Addr</span>`);
-      if (isAndroid && bkind === 'aab') tags.push(`<span class="tag-badge aab" title="构建 AAB（.aab Google Play 分包）">AAB</span>`);
-      if (isAndroid && bkind === 'gradleProject') tags.push(`<span class="tag-badge asproj" title="导出 Android Studio 工程">AS工程</span>`);
-      if (isAutoZip === false) tags.push(`<span class="tag-badge nozip" title="保留原始目录直接运行（不压缩为ZIP）">不压缩</span>`);
-      if (isShared) tags.push(`<span class="tag-badge shared" title="共享/自定义缓存目录: ${esc(cfg.customBuildDir)}">缓存</span>`);
-      if (isSigned) tags.push(`<span class="tag-badge signed" title="签名已配置">签名</span>`);
-      if (Array.isArray(cfg.vcsGroupIds) && cfg.vcsGroupIds.length) {
-        const gNames = cfg.vcsGroupIds.map(id => vcsGroupById(id)).filter(Boolean).map(g => g.name).join('、');
-        tags.push(`<span class="tag-badge vcs" title="构建前自动更新版本管理分组：${esc(gNames)}">⬆ ${esc(gNames || '更新分组')}</span>`);
+function moveBuildNodeToGroup(nodeId, targetGroupId, beforeNodeId) {
+  if (!buildNodeById(nodeId)) return;
+  state.buildGroups.forEach(g => {
+    g.nodeIds = (g.nodeIds || []).filter(x => String(x) !== String(nodeId));
+  });
+  if (targetGroupId) {
+    const g = buildGroupById(targetGroupId);
+    if (g) {
+      if (!Array.isArray(g.nodeIds)) g.nodeIds = [];
+      if (beforeNodeId && g.nodeIds.includes(beforeNodeId) && beforeNodeId !== nodeId) {
+        const idx = g.nodeIds.indexOf(beforeNodeId);
+        g.nodeIds.splice(idx, 0, nodeId);
+      } else {
+        g.nodeIds.push(nodeId);
       }
+    }
+  }
+  renderBuildGroups();
+  scheduleSave();
+}
 
-      return `<li>
-        <span class="idx">${i + 1}</span>
-        <span class="badge ${badgeClass}">${targetLabel}</span>
-        <span class="nm">
-          ${esc(p.name)}
-          ${tags.join(' ')}
-        </span>
-        <button class="cfg-btn" data-cfg="${esc(p.assetPath)}" title="独立配置缓存目录、命名规则、Addressables 与签名">⚙ 配置</button>
-        <button data-up="${i}" title="上移">↑</button>
-        <button data-down="${i}" title="下移">↓</button>
-        <button data-del="${esc(p.assetPath)}" title="从队列移除">×</button>
-      </li>`;
-    }).join('');
+function renderBuildNodeCard(n) {
+  const isAndroid = n.target === 13;
+  const isIOS = n.target === 9;
+  const isWin = n.target === 19 || n.target === 5;
+  const badgeClass = isAndroid ? "android" : isIOS ? "ios" : isWin ? "win" : "default";
+  const targetLabel = n.targetName || (isAndroid ? "Android" : isIOS ? "iOS" : isWin ? "Windows" : "未指定");
 
-    ul.querySelectorAll('button[data-cfg]').forEach(b => b.onclick = () => openProfileCfg(b.dataset.cfg));
-    ul.querySelectorAll('button[data-up]').forEach(b => b.onclick = () => moveQueue(+b.dataset.up, -1));
-    ul.querySelectorAll('button[data-down]').forEach(b => b.onclick = () => moveQueue(+b.dataset.down, +1));
-    ul.querySelectorAll('button[data-del]').forEach(b => b.onclick = () => removeFromQueue(b.dataset.del));
+  const isDev = n.dev != null ? n.dev : $('defaultDevBuild')?.checked;
+  const isAddr = n.buildAddressables != null ? n.buildAddressables : $('defaultBuildAddressables')?.checked;
+  const isAutoZip = n.autoZip != null ? n.autoZip : $('defaultAutoZip')?.checked;
+  const isShared = !!n.customBuildDir;
+  const isSigned = isAndroid && (n.keystoreName || n.keystorePass);
+  const bkind = n.androidBuildKind || $('defaultAndroidBuildKind')?.value || "apk";
+
+  const tags = [];
+  if (isDev) tags.push(`<span class="tag-badge dev" title="DEV 调试包">DEV</span>`);
+  if (isAddr) tags.push(`<span class="tag-badge addr" title="构建 Addressables">Addr</span>`);
+  if (isAndroid && bkind === "aab") tags.push(`<span class="tag-badge aab" title="构建 AAB（.aab Google Play 分包��">AAB</span>`);
+  if (isAndroid && bkind === "gradleProject") tags.push(`<span class="tag-badge asproj" title="导出 Android Studio 工程">AS工程</span>`);
+  if (isAutoZip === false) tags.push(`<span class="tag-badge nozip" title="保留原始目录直接运行（不压缩为ZIP）">不压缩</span>`);
+  if (isShared) tags.push(`<span class="tag-badge shared" title="共享/自定义缓存目录: ${esc(n.customBuildDir)}">缓存</span>`);
+  if (isSigned) tags.push(`<span class="tag-badge signed" title="签名已配置">签名</span>`);
+  if (Array.isArray(n.vcsGroupIds) && n.vcsGroupIds.length) {
+    const gNames = n.vcsGroupIds.map(id => vcsGroupById(id)).filter(Boolean).map(g => g.name).join("、");
+    tags.push(`<span class="tag-badge vcs" title="构建前自动更新版本管理分组：${esc(gNames)}">⬆ ${esc(gNames || "更新分组")}</span>`);
+  }
+
+  const profileDisplay = n.profileAssetPath || "（未关联 Profile，请点 ⚙ 配置选择）";
+
+  return `<div class="build-node" draggable="true" data-bnid="${esc(n.id)}" title="拖动 ⠿ 手柄将节点归入分组或调整顺序">
+    <span class="build-drag" title="拖动归组/排序">⠿</span>
+    <span class="badge ${badgeClass}">${esc(targetLabel)}</span>
+    <div class="build-node-main">
+      <div class="build-node-header">
+        <span class="build-node-name">${esc(n.name || "未命名节点")}</span>
+      </div>
+      <small class="build-node-path">${esc(profileDisplay)}</small>
+      ${tags.length ? `<div class="build-node-meta">${tags.join(" ")}</div>` : ""}
+    </div>
+    <div class="build-node-actions">
+      <button class="btn btn-xs btn-ghost" data-bn-cfg="${esc(n.id)}" title="编辑节点与高级配置">⚙ 配置</button>
+      <button class="btn btn-xs btn-ghost" data-bn-clone="${esc(n.id)}" title="克隆此节点">复制</button>
+      <button class="btn btn-xs btn-ghost" data-bn-del="${esc(n.id)}" title="删除节点">×</button>
+    </div>
+  </div>`;
+}
+
+function renderBuildGroupCard(g) {
+  const nodes = (g.nodeIds || []).map(buildNodeById).filter(Boolean);
+  return `<div class="card glass-card build-group-card" data-bgid="${esc(g.id)}">
+    <div class="card-header">
+      <div class="card-title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="12 2 2 7 12 12 22 7 12 2"></polyline><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+        <input type="text" class="build-group-name" value="${esc(g.name)}" data-bgname="${esc(g.id)}" title="点击重命名分组（回车 / 失焦保存）">
+        <span class="counter-badge">${nodes.length} 个节点</span>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-sm btn-ghost" data-bg-add-node="${esc(g.id)}">＋ 添加节点</button>
+        <button class="btn btn-sm btn-ghost" data-bg-del-group="${esc(g.id)}" title="删除分组（节点保留，回到未分组）">删除</button>
+      </div>
+    </div>
+    <div class="card-body build-group-body">
+      ${nodes.map(n => renderBuildNodeCard(n)).join("") || '<div class="empty-state vcs-drop-hint">空打包组 · 点击「＋ 添加节点」或将节点卡片拖入此处</div>'}
+    </div>
+  </div>`;
+}
+
+function renderBuildGroups() {
+  const un = buildUngrouped();
+  const unArea = $('buildUngroupedArea');
+  if (unArea) {
+    unArea.innerHTML = un.map(n => renderBuildNodeCard(n)).join("") ||
+      '<div class="empty-state vcs-drop-hint">暂无未分组节点 · 点击上方「添加打包节点」创建节点</div>';
+  }
+  const uc = $('buildUngroupedCount');
+  if (uc) uc.textContent = String(un.length);
+
+  const ga = $('buildGroupsArea');
+  if (ga) {
+    ga.innerHTML = state.buildGroups.length ? state.buildGroups.map(renderBuildGroupCard).join("") : "";
+  }
+  const eh = $('buildEmptyHint');
+  if (eh) eh.classList.toggle("hidden", state.buildGroups.length > 0);
+
+  // 绑定组与节点事件
+  document.querySelectorAll("[data-bg-add-node]").forEach(b => {
+    b.onclick = () => openBuildNodeModal(null, b.dataset.bgAddNode);
+  });
+  document.querySelectorAll("[data-bg-del-group]").forEach(b => {
+    b.onclick = () => deleteBuildGroup(b.dataset.bgDelGroup);
+  });
+  document.querySelectorAll("[data-bn-cfg]").forEach(b => {
+    b.onclick = () => openBuildNodeModal(b.dataset.bnCfg, null);
+  });
+  document.querySelectorAll("[data-bn-clone]").forEach(b => {
+    b.onclick = () => cloneBuildNode(b.dataset.bnClone);
+  });
+  document.querySelectorAll("[data-bn-del]").forEach(b => {
+    b.onclick = () => deleteBuildNode(b.dataset.bnDel);
+  });
+  document.querySelectorAll(".build-group-name").forEach(inp => {
+    inp.onchange = () => {
+      const g = buildGroupById(inp.dataset.bgname);
+      if (g) {
+        g.name = inp.value.trim() || "未命名构建组";
+        updateHomeBuildGroupSelect();
+        scheduleSave();
+      }
+    };
+    inp.onkeydown = e => { if (e.key === "Enter") inp.blur(); };
+  });
+
+  updateHomeBuildGroupSelect();
+  initBuildDnD();
+}
+
+function updateHomeBuildGroupSelect() {
+  const sel = $('homeBuildGroupSelect');
+  if (!sel) return;
+  const groups = state.buildGroups;
+  const totalNodes = state.buildNodes.length;
+
+  let options = [];
+  if (groups.length > 0) {
+    options.push(`<option value="all" ${state.activeBuildGroupId === "all" ? "selected" : ""}>⚡ 全部构建组 (${totalNodes} 个节点)</option>`);
+    groups.forEach(g => {
+      const gNodes = (g.nodeIds || []).map(buildNodeById).filter(Boolean);
+      const isSel = String(g.id) === String(state.activeBuildGroupId);
+      options.push(`<option value="${esc(g.id)}" ${isSel ? "selected" : ""}>📦 ${esc(g.name)} (${gNodes.length} 个节点)</option>`);
+    });
+  } else {
+    options.push(`<option value="all" selected>未分组节点 (${totalNodes} 个节点)</option>`);
+  }
+  sel.innerHTML = options.join("");
+
+  if (state.activeBuildGroupId !== "all" && !groups.some(g => String(g.id) === String(state.activeBuildGroupId))) {
+    state.activeBuildGroupId = groups.length ? groups[0].id : "all";
+    sel.value = state.activeBuildGroupId;
+  }
+
+  const activeNodes = resolveActiveBuildNodes();
+  state.queue = activeNodes;
+  const count = activeNodes.length;
+  if ($('sidebarQueueCount')) $('sidebarQueueCount').textContent = String(count);
+  
+  if ($('homeQueueSummary')) {
+    if (state.activeBuildGroupId === "all") {
+      $('homeQueueSummary').textContent = count ? `当前选定：全部构建组（共 ${count} 个节点，按序执行）` : "当前没有可执行的打包节点";
+    } else {
+      const curGroup = buildGroupById(state.activeBuildGroupId);
+      $('homeQueueSummary').textContent = curGroup
+        ? `当前打包组：「${curGroup.name}」（共 ${count} 个节点，按序执行）`
+        : `当前打包组（共 ${count} 个节点）`;
+    }
   }
 }
 
-/* ─────────────── Profile 独立配置弹窗 ─────────────── */
+/* ─────────────── 打包节点拖拽排序与归组 ─────────────── */
 
-function openProfileCfg(assetPath) {
-  const p = state.queue.find(q => q.assetPath === assetPath);
-  if (!p) return;
-  state.cfgTarget = assetPath;
-  const cfg = state.profileConfigs[assetPath] || {};
+function initBuildDnD() {
+  const root = $('tab-pane-profiles');
+  if (!root || root.__buildDnDBound) return;
+  root.__buildDnDBound = true;
 
-  $('profileCfgTitle').textContent = `节点构建定制：${p.name}（${p.targetName}）`;
-  $('pcCustomBuildDir').value = cfg.customBuildDir || '';
-  $('pcNameTemplate').value = cfg.nameTemplate || '';
-  $('pcAutoZip').checked = cfg.autoZip != null ? cfg.autoZip : $('defaultAutoZip').checked;
-  $('pcDev').checked = cfg.dev != null ? cfg.dev : $('defaultDevBuild').checked;
-  $('pcBuildAddressables').checked = cfg.buildAddressables != null ? cfg.buildAddressables : $('defaultBuildAddressables').checked;
-  $('pcAddressablesMethod').value = cfg.addressablesMethod || '';
-  $('pcBuildKind').value = ['apk', 'aab', 'gradleProject'].includes(cfg.androidBuildKind) ? cfg.androidBuildKind : ($('defaultAndroidBuildKind')?.value || 'apk');
+  root.addEventListener("dragstart", e => {
+    const n = e.target.closest('.build-node[draggable="true"]');
+    if (!n) return;
+    state.buildDragNodeId = n.dataset.bnid;
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", n.dataset.bnid); } catch { /* */ }
+    setTimeout(() => n.classList.add("dragging"), 0);
+  });
 
-  // 区分平台专属卡片
-  const isAndroid = p.target === 13;
-  const isIOS = p.target === 9;
-  const isWin = p.target === 19 || p.target === 5;
+  root.addEventListener("dragend", () => {
+    state.buildDragNodeId = null;
+    root.querySelectorAll(".build-node.dragging").forEach(el => el.classList.remove("dragging"));
+    root.querySelectorAll(".build-group-card, #buildUngroupedCard").forEach(el => el.classList.remove("drag-over"));
+  });
 
-  $('pcAndroidBox').classList.toggle('hidden', !isAndroid);
-  $('pcIosBox').classList.toggle('hidden', !isIOS);
-  $('pcWinBox').classList.toggle('hidden', !isWin);
+  root.addEventListener("dragover", e => {
+    const t = e.target.closest(".build-group-card, #buildUngroupedCard");
+    if (!t || !state.buildDragNodeId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    root.querySelectorAll(".build-group-card, #buildUngroupedCard").forEach(el => {
+      if (el !== t) el.classList.remove("drag-over");
+    });
+    t.classList.add("drag-over");
+  });
+
+  root.addEventListener("dragleave", e => {
+    const t = e.target.closest(".build-group-card, #buildUngroupedCard");
+    if (t && !t.contains(e.relatedTarget)) t.classList.remove("drag-over");
+  });
+
+  root.addEventListener("drop", e => {
+    const t = e.target.closest(".build-group-card, #buildUngroupedCard");
+    if (!t || !state.buildDragNodeId) return;
+    e.preventDefault();
+    t.classList.remove("drag-over");
+    const groupId = t.id === "buildUngroupedCard" ? null : t.dataset.bgid;
+    const targetNodeEl = e.target.closest(".build-node");
+    const targetNodeId = targetNodeEl ? targetNodeEl.dataset.bnid : null;
+    moveBuildNodeToGroup(state.buildDragNodeId, groupId, targetNodeId);
+  });
+}
+
+/* ─────────────── 打包节点配置与定制弹窗 ─────────────── */
+
+function updateModalPlatformUI() {
+  const assetPath = $('pcProfileSelect')?.value || "";
+  const p = state.profiles.find(x => x.assetPath === assetPath);
+  const n = state.buildEditNodeId ? buildNodeById(state.buildEditNodeId) : null;
+  const target = p ? p.target : (n ? n.target : 19);
+
+  const isAndroid = target === 13;
+  const isIOS = target === 9;
+  const isWin = target === 19 || target === 5;
+
+  $('pcAndroidBox').classList.toggle("hidden", !isAndroid);
+  $('pcIosBox').classList.toggle("hidden", !isIOS);
+  $('pcWinBox').classList.toggle("hidden", !isWin);
+
+  const dtBox = $('pcProfileDetailsInfo');
+  if (dtBox) {
+    if (p) {
+      dtBox.className = "vcs-probe-result ok";
+      dtBox.textContent = `✓ 已匹配 Profile: ${p.name} | 平台: ${p.targetName} | 场景数: ${p.sceneCount} | 版本: ${p.bundleVersion || "1.0"}${p.productName ? " | 产品���: " + p.productName : ""}`;
+    } else if (assetPath) {
+      dtBox.className = "vcs-probe-result";
+      dtBox.textContent = `ℹ 关联 Profile 路径: ${assetPath}（若未扫描到完整元数据，可在上方点击「扫描 Profile」）`;
+    } else {
+      dtBox.className = "vcs-probe-result err";
+      dtBox.textContent = `⚠ 请在上方下拉列表中选择要打包的 Profile`;
+    }
+  }
 
   if (isAndroid) {
-    $('pcKeystoreName').value = cfg.keystoreName || p.keystoreName || '';
-    $('pcAlias').value = cfg.keyaliasName || p.keyaliasName || 'key';
-    $('pcPass').value = cfg.keystorePass || '';
-    $('pcKeyPass').value = cfg.keyaliasPass || '';
-    $('pcRemember').checked = !!cfg.remember;
-    $('pcHint').textContent = '💡 安卓平台：Keystore 文件与别名已从 Profile 预填，填入密码即可。构建目标默认为「' + $('pcBuildKind').value + '」（APK / AAB / 导出 Android Studio 工程）。';
+    $('pcHint').textContent = "💡 安卓平台：Keystore 文件与别名已可从 Profile 自动填充，填入密码即可。构建目标默认为「" + ($('pcBuildKind')?.value || "APK") + "」（APK / AAB / 导出 Android Studio 工程）。";
   } else if (isIOS) {
-    $('pcHint').textContent = '💡 iOS 平台：导出 Xcode 工程后将自动打包压缩为 ZIP 归档。';
+    $('pcHint').textContent = "💡 iOS 平台：导出 Xcode 工程后将自动打包压缩为 ZIP 归档。";
   } else {
-    $('pcHint').textContent = '💡 Windows 平台：构建完成后将自动打包压缩为包含 exe 与 _Data 的 ZIP 归档。';
+    $('pcHint').textContent = "💡 Windows 平台：构建完成后将自动打包压缩为包含 exe 与 _Data 的 ZIP 归档。";
   }
-
-  // 版本更新组（构建前自动更新，每个构建配置单独配置）
-  state.pcVcsGroups = Array.isArray(cfg.vcsGroupIds) ? cfg.vcsGroupIds.slice() : [];
-  $('pcVcsEnabled').checked = state.pcVcsGroups.length > 0;
-  renderPcVcsChips();
-
-  $('profileCfgModal').classList.remove('hidden');
 }
 
-function saveProfileCfg() {
-  const assetPath = state.cfgTarget;
-  if (!assetPath) return;
-  const p = state.queue.find(q => q.assetPath === assetPath);
-  const isAndroid = p && p.target === 13;
+function openBuildNodeModal(nodeId, targetGroupId) {
+  state.buildEditNodeId = nodeId || null;
+  state.buildEditTargetGroupId = targetGroupId || null;
 
-  const cfg = {
+  const profSel = $('pcProfileSelect');
+  if (profSel) {
+    let opts = [];
+    if (state.profiles.length) {
+      opts = state.profiles.map(p => `<option value="${esc(p.assetPath)}">${esc(p.name)} (${esc(p.targetName)}) - ${esc(p.assetPath)}</option>`);
+    }
+    const n = nodeId ? buildNodeById(nodeId) : null;
+    if (n && n.profileAssetPath && !state.profiles.some(x => x.assetPath === n.profileAssetPath)) {
+      opts.unshift(`<option value="${esc(n.profileAssetPath)}">${esc(n.name || n.profileAssetPath)} (${esc(n.targetName || "Profile")}) - ${esc(n.profileAssetPath)}</option>`);
+    }
+    if (!opts.length) {
+      opts.push(`<option value="">（未发现 Profile，请在「构建节点与分组」页面顶部先扫描）</option>`);
+    }
+    profSel.innerHTML = opts.join("");
+  }
+
+  if (nodeId) {
+    const n = buildNodeById(nodeId);
+    if (!n) return;
+    $('profileCfgTitle').textContent = `编辑打包节点：${n.name || "未命名"}`;
+    $('pcNodeName').value = n.name || "";
+    if (profSel) profSel.value = n.profileAssetPath || "";
+    $('pcCustomBuildDir').value = n.customBuildDir || "";
+    $('pcNameTemplate').value = n.nameTemplate || "";
+    $('pcAutoZip').checked = n.autoZip != null ? n.autoZip : $('defaultAutoZip').checked;
+    $('pcDev').checked = n.dev != null ? n.dev : $('defaultDevBuild').checked;
+    $('pcBuildAddressables').checked = n.buildAddressables != null ? n.buildAddressables : $('defaultBuildAddressables').checked;
+    $('pcAddressablesMethod').value = n.addressablesMethod || "";
+    $('pcBuildKind').value = ["apk", "aab", "gradleProject"].includes(n.androidBuildKind) ? n.androidBuildKind : ($('defaultAndroidBuildKind')?.value || "apk");
+    $('pcKeystoreName').value = n.keystoreName || "";
+    $('pcAlias').value = n.keyaliasName || "key";
+    $('pcPass').value = n.keystorePass || "";
+    $('pcKeyPass').value = n.keyaliasPass || "";
+    $('pcRemember').checked = !!n.remember;
+    state.pcVcsGroups = Array.isArray(n.vcsGroupIds) ? n.vcsGroupIds.slice() : [];
+  } else {
+    $('profileCfgTitle').textContent = `添加打包节点`;
+    const firstProf = state.profiles[0];
+    if (profSel && firstProf) profSel.value = firstProf.assetPath;
+    $('pcNodeName').value = firstProf ? firstProf.name : "新建打包节点";
+    $('pcCustomBuildDir').value = "";
+    $('pcNameTemplate').value = "";
+    $('pcAutoZip').checked = $('defaultAutoZip').checked;
+    $('pcDev').checked = $('defaultDevBuild').checked;
+    $('pcBuildAddressables').checked = $('defaultBuildAddressables').checked;
+    $('pcAddressablesMethod').value = "";
+    $('pcBuildKind').value = $('defaultAndroidBuildKind')?.value || "apk";
+    $('pcKeystoreName').value = firstProf?.keystoreName || "";
+    $('pcAlias').value = firstProf?.keyaliasName || "key";
+    $('pcPass').value = "";
+    $('pcKeyPass').value = "";
+    $('pcRemember').checked = true;
+    state.pcVcsGroups = [];
+  }
+
+  $('pcVcsEnabled').checked = state.pcVcsGroups.length > 0;
+  renderPcVcsChips();
+  updateModalPlatformUI();
+
+  $('profileCfgModal').classList.remove("hidden");
+  $('pcNodeName').focus();
+  $('pcNodeName').select();
+}
+
+function onProfileSelectChange() {
+  const assetPath = $('pcProfileSelect')?.value || "";
+  const p = state.profiles.find(x => x.assetPath === assetPath);
+  if (p) {
+    if (!$('pcNodeName').value.trim() || $('pcNodeName').value === "新建打包节点") {
+      $('pcNodeName').value = p.name;
+    }
+    if (p.target === 13) {
+      if (p.keystoreName && !$('pcKeystoreName').value.trim()) $('pcKeystoreName').value = p.keystoreName;
+      if (p.keyaliasName && (!$('pcAlias').value.trim() || $('pcAlias').value === "key")) $('pcAlias').value = p.keyaliasName;
+    }
+  }
+  updateModalPlatformUI();
+}
+
+function saveBuildNodeModal() {
+  const nodeName = $('pcNodeName').value.trim();
+  const assetPath = $('pcProfileSelect').value.trim();
+  if (!assetPath) {
+    showToast("请选择关联的 Profile", "err");
+    return;
+  }
+  const p = state.profiles.find(x => x.assetPath === assetPath);
+  const target = p ? p.target : 19;
+  const isAndroid = target === 13;
+
+  const nodeData = {
+    name: nodeName || (p ? p.name : "打包节点"),
+    profileAssetPath: assetPath,
+    target: p ? p.target : (state.buildEditNodeId ? buildNodeById(state.buildEditNodeId)?.target : 19),
+    targetName: p ? p.targetName : (isAndroid ? "Android" : "Windows (x64)"),
+    productName: p ? p.productName : null,
+    bundleVersion: p ? p.bundleVersion : null,
+    sceneCount: p ? p.sceneCount : 0,
+    absPath: p ? p.absPath : "",
     customBuildDir: $('pcCustomBuildDir').value.trim(),
     nameTemplate: $('pcNameTemplate').value.trim(),
     autoZip: $('pcAutoZip').checked,
     dev: $('pcDev').checked,
     buildAddressables: $('pcBuildAddressables').checked,
     addressablesMethod: $('pcAddressablesMethod').value.trim(),
-    androidBuildKind: isAndroid ? $('pcBuildKind').value : '',
-    keystoreName: isAndroid ? $('pcKeystoreName').value.trim() : '',
-    keyaliasName: isAndroid ? $('pcAlias').value.trim() : '',
-    keystorePass: (isAndroid && $('pcRemember').checked) ? $('pcPass').value : (isAndroid ? $('pcPass').value : ''),
-    keyaliasPass: (isAndroid && $('pcRemember').checked) ? $('pcKeyPass').value : (isAndroid ? $('pcKeyPass').value : ''),
+    androidBuildKind: isAndroid ? $('pcBuildKind').value : "",
+    keystoreName: isAndroid ? $('pcKeystoreName').value.trim() : "",
+    keyaliasName: isAndroid ? $('pcAlias').value.trim() : "",
+    keystorePass: isAndroid ? $('pcPass').value : "",
+    keyaliasPass: isAndroid ? $('pcKeyPass').value : "",
     remember: isAndroid ? $('pcRemember').checked : false,
     vcsGroupIds: $('pcVcsEnabled').checked ? state.pcVcsGroups.slice() : [],
   };
 
-  state.profileConfigs[assetPath] = cfg;
+  if (state.buildEditNodeId) {
+    const n = buildNodeById(state.buildEditNodeId);
+    if (n) Object.assign(n, nodeData);
+    showToast(`已更新节点「${nodeData.name}」`, "ok");
+  } else {
+    const newId = generateId("bn");
+    const newNode = { id: newId, ...nodeData };
+    state.buildNodes.push(newNode);
+    if (state.buildEditTargetGroupId) {
+      const g = buildGroupById(state.buildEditTargetGroupId);
+      if (g) {
+        if (!Array.isArray(g.nodeIds)) g.nodeIds = [];
+        g.nodeIds.push(newId);
+      }
+    } else if (state.activeBuildGroupId && state.activeBuildGroupId !== "all") {
+      const g = buildGroupById(state.activeBuildGroupId);
+      if (g) {
+        if (!Array.isArray(g.nodeIds)) g.nodeIds = [];
+        g.nodeIds.push(newId);
+      }
+    }
+    showToast(`已添加节点「${newNode.name}」`, "ok");
+  }
+
+  $('profileCfgModal').classList.add("hidden");
+  state.buildEditNodeId = null;
+  state.buildEditTargetGroupId = null;
   state.pcVcsGroups = [];
-  $('profileCfgModal').classList.add('hidden');
-  renderQueue();
+  renderBuildGroups();
   scheduleSave();
-  showToast('Profile 独立定制配置已保存', 'ok');
 }
 
-function cancelProfileCfg() {
-  $('profileCfgModal').classList.add('hidden');
-  state.cfgTarget = null;
+function closeBuildNodeModal() {
+  $('profileCfgModal').classList.add("hidden");
+  state.buildEditNodeId = null;
+  state.buildEditTargetGroupId = null;
   state.pcVcsGroups = [];
 }
-
 /* ─────────────── 构建产物列表 ─────────────── */
 
 function formatBytes(bytes) {
@@ -660,110 +1089,153 @@ async function doCliOpen() {
 /* ─────────────── 构建流程与命令组合 ─────────────── */
 
 function buildBody() {
+  const activeNodes = resolveActiveBuildNodes();
   return {
     projectPath: $('projectPath').value.trim(),
-    profiles: state.queue.map(p => {
-      const cfg = state.profileConfigs[p.assetPath] || {};
-      return Object.assign({}, p, {
-        customBuildDir: cfg.customBuildDir || null,
-        nameTemplate: cfg.nameTemplate || null,
-        autoZip: cfg.autoZip != null ? cfg.autoZip : $('defaultAutoZip').checked,
-        dev: cfg.dev != null ? cfg.dev : $('defaultDevBuild').checked,
-        buildAddressables: cfg.buildAddressables != null ? cfg.buildAddressables : $('defaultBuildAddressables').checked,
-        addressablesMethod: cfg.addressablesMethod || null,
-        androidBuildKind: cfg.androidBuildKind || $('defaultAndroidBuildKind').value || 'apk',
-        vcsGroupIds: Array.isArray(cfg.vcsGroupIds) ? cfg.vcsGroupIds.slice() : [],
-        sign: cfg,
-      });
+    profiles: activeNodes.map(node => {
+      const p = state.profiles.find(x => x.assetPath === node.profileAssetPath) || {};
+      const target = node.target != null ? node.target : (p.target != null ? p.target : 19);
+      const targetName = node.targetName || p.targetName || (target === 13 ? "Android" : "Windows (x64)");
+      const productName = node.productName || p.productName || null;
+      const bundleVersion = node.bundleVersion || p.bundleVersion || null;
+      const sceneCount = node.sceneCount != null ? node.sceneCount : (p.sceneCount || 0);
+      const absPath = node.absPath || p.absPath || "";
+      const customBuildDir = node.customBuildDir || null;
+      const nameTemplate = node.nameTemplate || null;
+      const autoZip = node.autoZip != null ? node.autoZip : $('defaultAutoZip').checked;
+      const dev = node.dev != null ? node.dev : $('defaultDevBuild').checked;
+      const buildAddressables = node.buildAddressables != null ? node.buildAddressables : $('defaultBuildAddressables').checked;
+      const addressablesMethod = node.addressablesMethod || null;
+      const androidBuildKind = node.androidBuildKind || $('defaultAndroidBuildKind').value || "apk";
+      const vcsGroupIds = Array.isArray(node.vcsGroupIds) ? node.vcsGroupIds.slice() : [];
+      return {
+        id: node.id,
+        name: node.name || p.name || "未命名节点",
+        target,
+        targetName,
+        assetPath: node.profileAssetPath || p.assetPath,
+        absPath,
+        productName,
+        subtarget: node.subtarget || p.subtarget || 0,
+        sceneCount,
+        bundleVersion,
+        customBuildDir,
+        nameTemplate,
+        autoZip,
+        dev,
+        buildAddressables,
+        addressablesMethod,
+        androidBuildKind,
+        vcsGroupIds,
+        sign: {
+          keystoreName: node.keystoreName || p.keystoreName || "",
+          keyaliasName: node.keyaliasName || p.keyaliasName || "",
+          keystorePass: node.keystorePass || "",
+          keyaliasPass: node.keyaliasPass || "",
+          remember: !!node.remember,
+          customBuildDir,
+          nameTemplate,
+          autoZip,
+          dev,
+          buildAddressables,
+          addressablesMethod,
+          androidBuildKind,
+        },
+      };
     }),
     engine: collectConfig().engine,
     outputBase: $('outputBase').value.trim(),
-    successDir: $('successDir').value.trim() || '构建成功',
+    successDir: $('successDir').value.trim() || "构建成功",
     artifactNameTemplate: $('artifactNameTemplate').value.trim(),
     autoZip: $('defaultAutoZip').checked,
     dev: $('defaultDevBuild').checked,
     buildAddressables: $('defaultBuildAddressables').checked,
-    androidBuildKind: $('defaultAndroidBuildKind').value || 'apk',
+    androidBuildKind: $('defaultAndroidBuildKind').value || "apk",
     stopOnError: $('stopOnError').checked,
-    buildNumber: $('buildNumber').value.trim() || '-1',
+    buildNumber: $('buildNumber').value.trim() || "-1",
     proxy: collectConfig().proxy,
   };
 }
 
 async function doPreview() {
-  if (!state.queue.length) {
-    showToast('队列为空，请先添加 Profile', 'err');
-    switchTab('profiles');
+  const activeNodes = resolveActiveBuildNodes();
+  if (!activeNodes.length) {
+    showToast("当前打包组为空，请先在「构建节点与分组」中添加节点", "err");
+    switchTab("profiles");
     return;
   }
   try {
-    const r = await api('/api/build/preview', buildBody());
+    const r = await api("/api/build/preview", buildBody());
     const blocks = [];
     blocks.push(r.items.map(it => {
       const badges = [];
-      if (it.dev) badges.push('[DEV]');
-      if (it.buildAddressables) badges.push('[Addressables]');
-      const ak = String(it.androidBuildKind || 'apk').toLowerCase();
-      if (ak === 'aab') badges.push('[AAB]');
-      if (ak === 'gradleproject' || ak === 'gradle' || ak === 'asproject') badges.push('[导出AS工程]');
-      if (it.autoZip === false) badges.push('[直接运行/不压缩]');
+      if (it.dev) badges.push("[DEV]");
+      if (it.buildAddressables) badges.push("[Addressables]");
+      const ak = String(it.androidBuildKind || "apk").toLowerCase();
+      if (ak === "aab") badges.push("[AAB]");
+      if (ak === "gradleproject" || ak === "gradle" || ak === "asproject") badges.push("[导出AS工程]");
+      if (it.autoZip === false) badges.push("[直接运行/不压缩]");
       if (it.customBuildDir) badges.push(`[共享缓存: ${esc(it.customBuildDir)}]`);
       const pre = it.vcsBeforeBuild;
       return `<div class="cmd-block">
-        <span class="tag">▶ ${esc(it.name)} · ${esc(it.target)} ${badges.join(' ')}</span>
+        <span class="tag">▶ ${esc(it.name)} · ${esc(it.target)} ${badges.join(" ")}</span>
         ${pre && pre.enabled
-          ? `<div class="hint">⬆ 构建前先更新版本管理分组：${esc((pre.groups || []).join('、') || '—')}（${pre.nodeCount || 0} 个节点：${esc((pre.nodeNames || []).join('、') || '—')}）——还原未提交 → 分支切换 → 远端在线才 pull / update，成功后才构建</div>`
-          : ''}
+          ? `<div class="hint">⬆ 构建前先更新版本管理分组：${esc((pre.groups || []).join("、") || "—")}（${pre.nodeCount || 0} 个节点：${esc((pre.nodeNames || []).join("、") || "—")}）——还原未提交 → 分支切换 → 远端在线才 pull / update，成功后才构建</div>`
+          : ""}
         <div class="hint">预计产物名: <strong>${esc(it.previewName)}</strong></div>
         <div class="hint">输出目标: ${esc(it.output)}</div>
-        ${it.archiveDir ? `<div class="hint">归档目录: ${esc(it.archiveDir)}</div>` : ''}
+        ${it.archiveDir ? `<div class="hint">归档目录: ${esc(it.archiveDir)}</div>` : ""}
         ${esc(it.command)}
       </div>`;
-    }).join(''));
-    $('previewList').innerHTML = blocks.join('') || '<div class="hint">（无预览命令）</div>';
-    $('previewModal').classList.remove('hidden');
+    }).join(""));
+    $('previewList').innerHTML = blocks.join("") || '<div class="hint">（无预览命令）</div>';
+    $('previewModal').classList.remove("hidden");
   } catch (e) {
-    showToast('预览失败: ' + e.message, 'err');
+    showToast("预览失败: " + e.message, "err");
   }
 }
 
 async function doStart() {
-  if (!state.queue.length) {
-    showToast('请先在队列中添加至少一个 Profile', 'err');
-    switchTab('profiles');
+  const activeNodes = resolveActiveBuildNodes();
+  if (!activeNodes.length) {
+    showToast("当前打包组为空，请先在「构建节点与分组」中添加节点", "err");
+    switchTab("profiles");
     return;
   }
-  if (!state.job || state.job.state !== 'running') {
-    $('progressArea').classList.remove('hidden');
-    buildProgressInit();
-    state.rawLogs = '';
-    $('logView').textContent = '';
-  }
+  state.queue = activeNodes;
+  $('progressArea').classList.remove("hidden");
+  buildProgressInit();
+  state.rawLogs = "";
+  $('logView').textContent = "";
+  appendLog(`[系统] 正在准备批量打包，共选定 ${activeNodes.length} 个节点…\n`);
+  appendLog(`[系统] 正在向构建服务下发指令并启动 Unity 引擎…\n`);
+
   $('btnStart').disabled = true;
   $('btnStop').disabled = false;
-  showBanner('run', '正在启动批量构建流水线…');
-  updateHeaderStatus('running', '批量打包中…');
+  showBanner("run", `正在启动批量构建流水线（共 ${activeNodes.length} 个节点）…`);
+  updateHeaderStatus("running", "批量打包启动中…");
   try {
-    await api('/api/build/start', buildBody());
-    showToast('已启动批量打包', 'ok');
+    await api("/api/build/start", buildBody());
+    showToast("已启动批量打包", "ok");
+    appendLog(`[系统] 构建任务已成功接收，Unity 正在后台加载工程与编译资源，日志即将开始输出…\n`);
   } catch (e) {
-    showBanner('fail', '启动失败：' + e.message);
-    updateHeaderStatus('fail', '启动失败');
+    showBanner("fail", "启动失败：" + e.message);
+    updateHeaderStatus("fail", "启动失败");
     $('btnStart').disabled = false;
     $('btnStop').disabled = true;
-    showToast('启动失败: ' + e.message, 'err');
+    appendLog(`\n[错误] 启动批量构建流水线失败: ${e.message}\n`);
+    showToast("启动失败: " + e.message, "err");
   }
 }
 
 async function doStop() {
   try {
-    await api('/api/build/stop');
-    showToast('已请求终止构建', 'info');
+    await api("/api/build/stop");
+    showToast("已请求终止构建", "info");
   } catch (e) {
     console.warn(e);
   }
 }
-
 /* ─────────────── 环境编译检测 ─────────────── */
 
 function checkBody() {
@@ -1367,7 +1839,8 @@ function updateGlobalProgressBar(idx, stage, pct) {
 function buildProgressInit() {
   const list = $('progressList');
   if (!list) return;
-  list.innerHTML = state.queue.map((p, i) =>
+  const nodes = (state.queue && state.queue.length) ? state.queue : resolveActiveBuildNodes();
+  list.innerHTML = nodes.map((p, i) =>
     `<div class="prog-item" id="prog-${i}">
       <span class="st pending">待执行</span>
       <span class="pm">
@@ -2014,6 +2487,9 @@ function filterVcsLogView(search) {
 /* ─────────────── 页面初始化与事件绑定 ─────────────── */
 
 async function init() {
+  // 0. 立即建立 SSE 连接：无论后续任何初始化是否失败，日志/进度都通过 SSE 实时推送
+  initSSE();
+
   // 1. 侧边导航切换
   document.querySelectorAll('.sidebar-nav .nav-item').forEach(b => {
     b.onclick = () => switchTab(b.dataset.tab);
@@ -2059,6 +2535,21 @@ async function init() {
       }
     };
   });
+
+  // 首页构建组下拉列表变更
+  if ($('homeBuildGroupSelect')) {
+    $('homeBuildGroupSelect').onchange = e => {
+      state.activeBuildGroupId = e.target.value;
+      updateHomeBuildGroupSelect();
+      scheduleSave();
+    };
+  }
+
+  // 构建节点与分组按钮
+  initBuildDnD();
+  if ($('btnBuildAddNode')) $('btnBuildAddNode').onclick = () => openBuildNodeModal(null, null);
+  if ($('btnBuildAddGroup')) $('btnBuildAddGroup').onclick = addBuildGroup;
+  if ($('pcProfileSelect')) $('pcProfileSelect').onchange = onProfileSelectChange;
 
   // 4. 按钮事件
   $('btnUseRepo').onclick = () => { $('projectPath').value = '..\\..'; scheduleSave(); doScan(); };
@@ -2126,9 +2617,9 @@ async function init() {
     copyToClipboard(text, '已复制���部预览命令');
   };
 
-  $('pcSave').onclick = saveProfileCfg;
-  $('pcCancel').onclick = cancelProfileCfg;
-  $('btnCancelProfileCfgTop').onclick = cancelProfileCfg;
+    $('pcSave').onclick = saveBuildNodeModal;
+  $('pcCancel').onclick = closeBuildNodeModal;
+  $('btnCancelProfileCfgTop').onclick = closeBuildNodeModal;
 
   $('aiClose').onclick = () => $('aiModal').classList.add('hidden');
   $('btnAiCloseTop').onclick = () => $('aiModal').classList.add('hidden');
@@ -2144,15 +2635,17 @@ async function init() {
   $('btnExpandLog').onclick = () => $('terminalBox').classList.toggle('fullscreen');
   $('logSearch').oninput = e => filterLogView(e.target.value.trim());
 
-  // 7. Profile 平台筛选 Chips
-  $('filterChips').querySelectorAll('.chip').forEach(b => {
-    b.onclick = () => {
-      $('filterChips').querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-      state.filter = b.dataset.f;
-      renderProfiles();
-    };
-  });
+  // 7. Profile 平台筛选 Chips（节点/分组模式已不再使用平台筛选，保留兼容移除逻辑）
+  const filterChipsEl = $('filterChips');
+  if (filterChipsEl) {
+    filterChipsEl.querySelectorAll('.chip').forEach(b => {
+      b.onclick = () => {
+        filterChipsEl.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        state.filter = b.dataset.f;
+      };
+    });
+  }
 
   // 8. 引擎模式单选
   document.querySelectorAll('input[name="engineMode"]').forEach(r => {
@@ -2171,7 +2664,7 @@ async function init() {
     const el = $(id);
     if (el) el.onchange = () => {
       scheduleSave();
-      renderQueue();
+      renderBuildGroups();
     };
   });
 
@@ -2200,8 +2693,6 @@ async function init() {
   } catch (e) {
     console.error('init error:', e);
   }
-
-  initSSE();
 }
 
 document.addEventListener('DOMContentLoaded', init);

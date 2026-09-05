@@ -1055,9 +1055,28 @@ async function aiAnalyze(body) {
 }
 
 async function startJob(req) {
-  if (job && (job.state === 'running' || job.state === 'starting')) return { ok: false, error: '已有任务在运行' };
-  if (check && (check.state === 'running' || check.state === 'starting')) return { ok: false, error: '环境编译检测进行中，请先停止检测' };
-  if (vcs && (vcs.state === 'running' || vcs.state === 'starting')) return { ok: false, error: '版本管理更新进行中，请先停止更新' };
+  if (job && (job.state === 'running' || job.state === 'starting')) {
+    if (!job.child || (job.child.killed || job.child.exitCode !== null)) {
+      console.warn('[job] 检测到残留状态，自动重置任务状态');
+      job.state = 'done';
+    } else {
+      return { ok: false, error: '已有打包任务正在运行中，请先等待或点击「终止构建」' };
+    }
+  }
+  if (check && (check.state === 'running' || check.state === 'starting')) {
+    if (!check.child || (check.child.killed || check.child.exitCode !== null)) {
+      check.state = 'done';
+    } else {
+      return { ok: false, error: '环境编译检测进行中，请先停止检测' };
+    }
+  }
+  if (vcs && (vcs.state === 'running' || vcs.state === 'starting')) {
+    if (!vcs.child || (vcs.child.killed || vcs.child.exitCode !== null)) {
+      vcs.state = 'done';
+    } else {
+      return { ok: false, error: '版本管理更新进行中，请先停止更新' };
+    }
+  }
 
   const projectAbs = resolveProject(req.projectPath);
   if (!isValidProject(projectAbs)) return { ok: false, error: '项目路径无效: ' + req.projectPath };

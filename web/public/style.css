@@ -1667,6 +1667,163 @@ body {
 
 .hidden { display: none !important; }
 
+/* ────────── 首页构建组下拉选择 ────────── */
+.home-group-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  transition: all 0.2s ease;
+}
+.home-group-select-wrap:hover {
+  border-color: var(--accent-primary);
+  background: rgba(15, 23, 42, 0.9);
+}
+.home-group-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.home-group-select {
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 20px 4px 4px;
+  cursor: pointer;
+  outline: none;
+  min-width: 140px;
+  max-width: 240px;
+}
+.home-group-select option {
+  background: #1e293b;
+  color: #f1f5f9;
+}
+
+/* ───────���── 构建节点与分组 ────────── */
+.build-groups-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.build-group-card {
+  margin-bottom: 0;
+  border-top: 2px solid var(--accent-primary);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.build-group-card.drag-over,
+#buildUngroupedCard.drag-over {
+  border-color: var(--accent-primary) !important;
+  border-style: dashed;
+  box-shadow: 0 0 0 2px var(--accent-glow), var(--shadow-md);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.build-group-name {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 13.5px;
+  border-radius: 4px;
+  padding: 2px 6px;
+  min-width: 80px;
+  max-width: 220px;
+  transition: all 0.15s ease;
+}
+.build-group-name:hover { border-color: var(--border-subtle); }
+.build-group-name:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background: var(--bg-input);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.build-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  min-height: 68px;
+}
+
+.build-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  cursor: grab;
+  transition: all 0.15s ease;
+}
+.build-node:hover {
+  border-color: var(--border-medium);
+  background: var(--bg-card-hover);
+}
+.build-node.dragging { opacity: 0.4; }
+
+.build-drag {
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.build-node-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.build-node-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.build-node-name {
+  font-weight: 700;
+  color: var(--text-main);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-node-path,
+.build-node-meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.build-node-meta { color: var(--text-muted); display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+
+.build-node-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes scale-in { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes slide-up { from { transform: translateY(16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
