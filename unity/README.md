@@ -77,7 +77,8 @@ Unity.exe -batchmode -nographics -quit \
   -projectPath <项目路径> \
   -executeMethod TBuildTool.Editor.BuildCommand.Build \
   -profilePath Assets/Settings/Build Profiles/WallpaperAndroid.asset \
-  -outputPath <输出.apk/.exe> \
+  -outputPath <输出.apk/.aab/AS工程目录/.exe> \
+  [-androidBuildKind apk|aab|gradleProject] \   # 安卓构建目标（默认 apk；gradleProject = 导出 Android Studio 工程）
   [-keystoreName KeyStore/user.keystore] [-keystoreAlias key] \
   [-keystorePass <密码>] [-keyaliasPass <密码>] \
   -logFile <日志路径>

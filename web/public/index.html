@@ -668,36 +668,14 @@
                   <span class="switch-slider"></span>
                   <span class="switch-text">失败即停</span>
                 </label>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 打包前版本管理自动更新 -->
-        <div class="card glass-card">
-          <div class="card-header">
-            <div class="card-title">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
-              <h3>打包前版本管理自动更新</h3>
-            </div>
-            <label class="switch-label mini">
-              <input type="checkbox" id="vcsPreUpdateEnabled">
-              <span class="switch-slider"></span>
-              <span class="switch-text">启用</span>
-            </label>
-          </div>
-          <div class="card-body">
-            <div class="field-grid">
-              <div class="field-group full">
-                <label class="field-label">启动批量打包前，先自动更新选定的版本管理分组（可多选）：</label>
-                <div class="chips-container" id="vcsPreGroupChips"></div>
-              </div>
-              <div class="field-group full">
-                <span class="hint-text" id="vcsPreHint">
-                  执行顺序：<strong>勾选的分组逐个更新（还原未提交 → 远端在线才 pull / update）→ 全部成功后才开始批量打包</strong>；
-                  任一节点失败或取消将终止打包。未选择分组则自动跳过该步骤。
-                  （分组请在「版本管理」页创建与维护）
-                </span>
+                <div class="field-group" style="flex: 1; min-width: 220px;">
+                  <label for="defaultAndroidBuildKind" class="field-label-sm">安卓默认构建目标</label>
+                  <select id="defaultAndroidBuildKind" class="input-text input-sm">
+                    <option value="apk">APK（.apk 安装包）</option>
+                    <option value="aab">AAB（.aab Google Play 分包）</option>
+                    <option value="gradleProject">导出 Android Studio 工程（目录 + ZIP）</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -887,11 +865,41 @@
           </div>
         </div>
 
+        <!-- 版本更新组（构建前自动更新，每个构建配置单独配置） -->
+        <div class="modal-section-title" style="margin-top: 14px;">⬆️ 版本更新组（构建前）</div>
+        <div class="field-grid">
+          <div class="field-row" style="gap: 16px;">
+            <label class="switch-label">
+              <input type="checkbox" id="pcVcsEnabled">
+              <span class="switch-slider"></span>
+              <span class="switch-text">构建前自动更新版本管理分组</span>
+            </label>
+          </div>
+          <div class="field-group full">
+            <div class="chips-container" id="pcVcsGroupChips"></div>
+            <span class="hint-text">
+              构建「当前配置」前，先逐个更新所选分组（还原未提交 → 分支切换 → 远端在线才 pull / update）；
+              任一节点失败或取消将终止打包（关闭「失败即停」则跳过该配置继续构建）。分组在「版本管理」页维护，节点可配置目标分支。
+            </span>
+          </div>
+        </div>
+
         <!-- 平台专属区域 -->
         <div class="modal-section-title" style="margin-top: 14px;" id="pcPlatformTitle">📱 平台专属设置</div>
         
         <!-- Android 专属 -->
         <div id="pcAndroidBox" class="field-grid">
+          <div class="field-group full">
+            <label for="pcBuildKind" class="field-label">
+              <span>构建目标类型</span>
+              <span class="label-hint">（APK 安装包 / AAB Google Play 分包 / 导出 Android Studio 工程；导出工程为目录并自动 ZIP 归档）</span>
+            </label>
+            <select id="pcBuildKind" class="input-text">
+              <option value="apk">APK（.apk 安装包）</option>
+              <option value="aab">AAB（.aab Google Play 分包）</option>
+              <option value="gradleProject">导出 Android Studio 工程（目录 + ZIP）</option>
+            </select>
+          </div>
           <div class="field-group full">
             <label for="pcKeystoreName" class="field-label">Keystore 签名文件路径</label>
             <input type="text" id="pcKeystoreName" class="input-text" placeholder="KeyStore/user.keystore（相对项目根目录）">

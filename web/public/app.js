@@ -20,7 +20,7 @@ const state = {
   profiles: [],        // 扫描结果（全部）
   filter: 'all',
   queue: [],           // 选中的 profile 引用（顺序即打包顺序）
-  profileConfigs: {},  // assetPath -> { customBuildDir, nameTemplate, dev, buildAddressables, addressablesMethod, keystoreName, keyaliasName, keystorePass, keyaliasPass, remember }
+  profileConfigs: {},  // assetPath -> { customBuildDir, nameTemplate, dev, buildAddressables, addressablesMethod, androidBuildKind, keystoreName, keyaliasName, keystorePass, keyaliasPass, remember }
   job: null,           // 最近一次 SSE 状态
   jobProgress: null,
   outputs: [],         // 构建产物列表
@@ -39,8 +39,7 @@ const state = {
   vcsRawLogs: '',         // 版本管理日志
   vcsEditId: null,        // 节点弹窗正在编辑的节点 id（null = 新增）
   vcsDragId: null,        // 正在拖动的节点 id
-  vcsPreEnabled: false,   // 打包前自动更新：开关
-  vcsPreGroups: [],       // 打包前自动更新：选中的分组 id 列表
+  pcVcsGroups: [],        // Profile 配置弹窗：构建前版本更新组选中的分组 id 列表
 };
 
 /* ─────────────── 标签页切换 Tab Navigation ─────────────── */
@@ -149,6 +148,7 @@ function collectConfig() {
     defaultAutoZip: $('defaultAutoZip').checked,
     defaultDevBuild: $('defaultDevBuild').checked,
     defaultBuildAddressables: $('defaultBuildAddressables').checked,
+    defaultAndroidBuildKind: $('defaultAndroidBuildKind').value || 'apk',
     stopOnError: $('stopOnError').checked,
     proxy: {
       enabled: $('proxyEnabled').checked,
@@ -163,10 +163,6 @@ function collectConfig() {
     },
     buildNumber: $('buildNumber').value.trim() || '-1',
     profileConfigs: state.profileConfigs,
-    vcsBeforeBuild: {
-      enabled: !!(document.getElementById('vcsPreUpdateEnabled')?.checked),
-      groupIds: state.vcsPreGroups.slice(),
-    },
     check: {
       projectPath: $('checkProjectPath')?.value.trim() ?? '',
       unityExe: $('checkUnityExe')?.value.trim() ?? '',
@@ -212,6 +208,7 @@ function fillForm(cfg) {
   $('defaultAutoZip').checked = cfg.defaultAutoZip !== false;
   $('defaultDevBuild').checked = !!cfg.defaultDevBuild;
   $('defaultBuildAddressables').checked = !!cfg.defaultBuildAddressables;
+  $('defaultAndroidBuildKind').value = ['apk', 'aab', 'gradleProject'].includes(cfg.defaultAndroidBuildKind) ? cfg.defaultAndroidBuildKind : 'apk';
   $('stopOnError').checked = cfg.stopOnError !== false;
   const px = cfg.proxy || {};
   $('proxyEnabled').checked = !!px.enabled;
@@ -224,11 +221,6 @@ function fillForm(cfg) {
   $('aiApiKey').value = ai.apiKey || '';
   $('buildNumber').value = cfg.buildNumber != null ? cfg.buildNumber : '-1';
   state.profileConfigs = (cfg.profileConfigs && typeof cfg.profileConfigs === 'object') ? cfg.profileConfigs : {};
-  // 打包前自动更新配置恢复
-  const vpb = cfg.vcsBeforeBuild || {};
-  $('vcsPreUpdateEnabled').checked = !!vpb.enabled;
-  state.vcsPreGroups = Array.isArray(vpb.groupIds) ? vpb.groupIds.map(String) : [];
-  renderVcsPreChips();
   // 环境编译检测配置恢复
   const ck = cfg.check || {};
   $('checkProjectPath').value = ck.projectPath || cfg.projectPath || '';
@@ -385,13 +377,20 @@ function renderQueue() {
       const isAutoZip = cfg.autoZip != null ? cfg.autoZip : $('defaultAutoZip')?.checked;
       const isShared = !!cfg.customBuildDir;
       const isSigned = isAndroid && (cfg.keystoreName || cfg.keystorePass);
+      const bkind = cfg.androidBuildKind || $('defaultAndroidBuildKind')?.value || 'apk';
 
       const tags = [];
       if (isDev) tags.push(`<span class="tag-badge dev" title="DEV 调试包">DEV</span>`);
       if (isAddr) tags.push(`<span class="tag-badge addr" title="构建 Addressables">Addr</span>`);
+      if (isAndroid && bkind === 'aab') tags.push(`<span class="tag-badge aab" title="构建 AAB（.aab Google Play 分包）">AAB</span>`);
+      if (isAndroid && bkind === 'gradleProject') tags.push(`<span class="tag-badge asproj" title="导出 Android Studio 工程">AS工程</span>`);
       if (isAutoZip === false) tags.push(`<span class="tag-badge nozip" title="保留原始目录直接运行（不压缩为ZIP）">不压缩</span>`);
       if (isShared) tags.push(`<span class="tag-badge shared" title="共享/自定义缓存目录: ${esc(cfg.customBuildDir)}">缓存</span>`);
       if (isSigned) tags.push(`<span class="tag-badge signed" title="签名已配置">签名</span>`);
+      if (Array.isArray(cfg.vcsGroupIds) && cfg.vcsGroupIds.length) {
+        const gNames = cfg.vcsGroupIds.map(id => vcsGroupById(id)).filter(Boolean).map(g => g.name).join('、');
+        tags.push(`<span class="tag-badge vcs" title="构建前自动更新版本管理分组：${esc(gNames)}">⬆ ${esc(gNames || '更新分组')}</span>`);
+      }
 
       return `<li>
         <span class="idx">${i + 1}</span>
@@ -429,6 +428,7 @@ function openProfileCfg(assetPath) {
   $('pcDev').checked = cfg.dev != null ? cfg.dev : $('defaultDevBuild').checked;
   $('pcBuildAddressables').checked = cfg.buildAddressables != null ? cfg.buildAddressables : $('defaultBuildAddressables').checked;
   $('pcAddressablesMethod').value = cfg.addressablesMethod || '';
+  $('pcBuildKind').value = ['apk', 'aab', 'gradleProject'].includes(cfg.androidBuildKind) ? cfg.androidBuildKind : ($('defaultAndroidBuildKind')?.value || 'apk');
 
   // 区分平台专属卡片
   const isAndroid = p.target === 13;
@@ -445,12 +445,17 @@ function openProfileCfg(assetPath) {
     $('pcPass').value = cfg.keystorePass || '';
     $('pcKeyPass').value = cfg.keyaliasPass || '';
     $('pcRemember').checked = !!cfg.remember;
-    $('pcHint').textContent = '💡 安卓平台：Keystore 文件与别名已从 Profile 预填，填入密码即可。';
+    $('pcHint').textContent = '💡 安卓平台：Keystore 文件与别名已从 Profile 预填，填入密码即可。构建目标默认为「' + $('pcBuildKind').value + '」（APK / AAB / 导出 Android Studio 工程）。';
   } else if (isIOS) {
     $('pcHint').textContent = '💡 iOS 平台：导出 Xcode 工程后将自动打包压缩为 ZIP 归档。';
   } else {
     $('pcHint').textContent = '💡 Windows 平台：构建完成后将自动打包压缩为包含 exe 与 _Data 的 ZIP 归档。';
   }
+
+  // 版本更新组（构建前自动更新，每个构建配置单独配置）
+  state.pcVcsGroups = Array.isArray(cfg.vcsGroupIds) ? cfg.vcsGroupIds.slice() : [];
+  $('pcVcsEnabled').checked = state.pcVcsGroups.length > 0;
+  renderPcVcsChips();
 
   $('profileCfgModal').classList.remove('hidden');
 }
@@ -468,14 +473,17 @@ function saveProfileCfg() {
     dev: $('pcDev').checked,
     buildAddressables: $('pcBuildAddressables').checked,
     addressablesMethod: $('pcAddressablesMethod').value.trim(),
+    androidBuildKind: isAndroid ? $('pcBuildKind').value : '',
     keystoreName: isAndroid ? $('pcKeystoreName').value.trim() : '',
     keyaliasName: isAndroid ? $('pcAlias').value.trim() : '',
     keystorePass: (isAndroid && $('pcRemember').checked) ? $('pcPass').value : (isAndroid ? $('pcPass').value : ''),
     keyaliasPass: (isAndroid && $('pcRemember').checked) ? $('pcKeyPass').value : (isAndroid ? $('pcKeyPass').value : ''),
     remember: isAndroid ? $('pcRemember').checked : false,
+    vcsGroupIds: $('pcVcsEnabled').checked ? state.pcVcsGroups.slice() : [],
   };
 
   state.profileConfigs[assetPath] = cfg;
+  state.pcVcsGroups = [];
   $('profileCfgModal').classList.add('hidden');
   renderQueue();
   scheduleSave();
@@ -485,6 +493,7 @@ function saveProfileCfg() {
 function cancelProfileCfg() {
   $('profileCfgModal').classList.add('hidden');
   state.cfgTarget = null;
+  state.pcVcsGroups = [];
 }
 
 /* ─────────────── 构建产物列表 ─────────────── */
@@ -662,6 +671,8 @@ function buildBody() {
         dev: cfg.dev != null ? cfg.dev : $('defaultDevBuild').checked,
         buildAddressables: cfg.buildAddressables != null ? cfg.buildAddressables : $('defaultBuildAddressables').checked,
         addressablesMethod: cfg.addressablesMethod || null,
+        androidBuildKind: cfg.androidBuildKind || $('defaultAndroidBuildKind').value || 'apk',
+        vcsGroupIds: Array.isArray(cfg.vcsGroupIds) ? cfg.vcsGroupIds.slice() : [],
         sign: cfg,
       });
     }),
@@ -672,13 +683,10 @@ function buildBody() {
     autoZip: $('defaultAutoZip').checked,
     dev: $('defaultDevBuild').checked,
     buildAddressables: $('defaultBuildAddressables').checked,
+    androidBuildKind: $('defaultAndroidBuildKind').value || 'apk',
     stopOnError: $('stopOnError').checked,
     buildNumber: $('buildNumber').value.trim() || '-1',
     proxy: collectConfig().proxy,
-    vcsBeforeBuild: {
-      enabled: !!(document.getElementById('vcsPreUpdateEnabled')?.checked),
-      groupIds: state.vcsPreGroups.slice(),
-    },
   };
 }
 
@@ -691,21 +699,21 @@ async function doPreview() {
   try {
     const r = await api('/api/build/preview', buildBody());
     const blocks = [];
-    if (r.vcsBeforeBuild && r.vcsBeforeBuild.enabled) {
-      blocks.push(`<div class="cmd-block">
-        <span class="tag">⬆ 打包前自动更新（版本管理）</span>
-        <div class="hint">分组：${esc((r.vcsBeforeBuild.groups || []).join('、') || '—')} · ${r.vcsBeforeBuild.nodeCount || 0} 个节点（${esc((r.vcsBeforeBuild.nodeNames || []).join('、') || '无')}）</div>
-        <div class="hint">还原未提交 → 远端在线才 pull / update；全部成功后才开始打包，任一失败或取消将终止打包</div>
-      </div>`);
-    }
     blocks.push(r.items.map(it => {
       const badges = [];
       if (it.dev) badges.push('[DEV]');
       if (it.buildAddressables) badges.push('[Addressables]');
+      const ak = String(it.androidBuildKind || 'apk').toLowerCase();
+      if (ak === 'aab') badges.push('[AAB]');
+      if (ak === 'gradleproject' || ak === 'gradle' || ak === 'asproject') badges.push('[导出AS工程]');
       if (it.autoZip === false) badges.push('[直接运行/不压缩]');
       if (it.customBuildDir) badges.push(`[共享缓存: ${esc(it.customBuildDir)}]`);
+      const pre = it.vcsBeforeBuild;
       return `<div class="cmd-block">
         <span class="tag">▶ ${esc(it.name)} · ${esc(it.target)} ${badges.join(' ')}</span>
+        ${pre && pre.enabled
+          ? `<div class="hint">⬆ 构建前先更新版本管理分组：${esc((pre.groups || []).join('、') || '—')}（${pre.nodeCount || 0} 个节点：${esc((pre.nodeNames || []).join('、') || '—')}）——还原未提交 → 分支切换 → 远端在线才 pull / update，成功后才构建</div>`
+          : ''}
         <div class="hint">预计产物名: <strong>${esc(it.previewName)}</strong></div>
         <div class="hint">输出目标: ${esc(it.output)}</div>
         ${it.archiveDir ? `<div class="hint">归档目录: ${esc(it.archiveDir)}</div>` : ''}
@@ -1708,34 +1716,31 @@ function renderVcs() {
   if (eh) eh.classList.toggle('hidden', state.vcsGroups.length > 0);
 
   bindVcsEvents();
-  renderVcsPreChips();
 }
 
-/* 打包前自动更新：分组多选 chips（引擎与高级配置 Tab） */
-function renderVcsPreChips() {
-  const box = $('vcsPreGroupChips');
+/* Profile 配置弹窗：版本更新组多选 chips（每个构建配置单独配置） */
+function renderPcVcsChips() {
+  const box = $('pcVcsGroupChips');
   if (!box) return;
-  // 分组数据已加载时才清理失效选择（页面初始化时 vcs 分组可能尚未加载，需保留已保存选择）
-  if (state.vcsGroups.length) {
-    state.vcsPreGroups = state.vcsPreGroups.filter(id => vcsGroupById(id));
-  }
+  const enabled = $('pcVcsEnabled')?.checked;
   if (!state.vcsGroups.length) {
     box.innerHTML = '<button class="chip" disabled title="暂无分组">（暂无分组，请先在「版本管理」页创建）</button>';
     return;
   }
   box.innerHTML = state.vcsGroups.map(g => {
-    const on = state.vcsPreGroups.indexOf(String(g.id)) >= 0;
+    const on = state.pcVcsGroups.indexOf(String(g.id)) >= 0;
     const cnt = (g.nodeIds || []).length;
-    return `<button class="chip ${on ? 'active' : ''}" data-vcs-pre="${esc(g.id)}" title="分组 ${esc(g.name)} · ${cnt} 个节点">${esc(g.name)} (${cnt})</button>`;
+    return `<button class="chip ${on ? 'active' : ''}" data-pc-vcs="${esc(g.id)}" title="分组 ${esc(g.name)} · ${cnt} 个节点">${esc(g.name)} (${cnt})</button>`;
   }).join('');
-  box.querySelectorAll('button[data-vcs-pre]').forEach(b => {
+  box.classList.toggle('chips-disabled', !enabled);
+  box.querySelectorAll('button[data-pc-vcs]').forEach(b => {
     b.onclick = () => {
-      const id = b.dataset.vcsPre;
-      const i = state.vcsPreGroups.indexOf(id);
-      if (i >= 0) state.vcsPreGroups.splice(i, 1);
-      else state.vcsPreGroups.push(id);
-      renderVcsPreChips();
-      scheduleSave();
+      if (!$('pcVcsEnabled')?.checked) return;
+      const id = b.dataset.pcVcs;
+      const i = state.pcVcsGroups.indexOf(id);
+      if (i >= 0) state.pcVcsGroups.splice(i, 1);
+      else state.pcVcsGroups.push(id);
+      renderPcVcsChips();
     };
   });
 }
@@ -2100,8 +2105,8 @@ async function init() {
   $('btnCopyVcsLog').onclick = () => copyToClipboard(state.vcsRawLogs, '已复制版本管理日志');
   $('btnExpandVcsLog').onclick = () => $('vcsTerminalBox').classList.toggle('fullscreen');
   $('vcsLogSearch').oninput = e => filterVcsLogView(e.target.value.trim());
-  $('vcsPreUpdateEnabled').onchange = () => { state.vcsPreEnabled = $('vcsPreUpdateEnabled').checked; scheduleSave(); };
-  renderVcsPreChips();
+  // Profile 配置弹窗：版本更新组开关
+  $('pcVcsEnabled').onchange = () => renderPcVcsChips();
 
   // 自定义还原指令一键预设
   document.querySelectorAll('[data-revert-preset]').forEach(b => {
@@ -2162,7 +2167,7 @@ async function init() {
     const el = $(id);
     if (el) el.oninput = scheduleSave;
   });
-  ['nographics', 'defaultAutoZip', 'defaultDevBuild', 'defaultBuildAddressables', 'stopOnError', 'proxyEnabled', 'aiEnabled', 'checkNographics'].forEach(id => {
+  ['nographics', 'defaultAutoZip', 'defaultDevBuild', 'defaultBuildAddressables', 'defaultAndroidBuildKind', 'stopOnError', 'proxyEnabled', 'aiEnabled', 'checkNographics'].forEach(id => {
     const el = $(id);
     if (el) el.onchange = () => {
       scheduleSave();

@@ -249,7 +249,7 @@ function parseCmd(s) {
 /**
  * 需求 1：支持单独指定构建目标文件夹，可多 Profile 公用缓存目录
  */
-function makeOutputs(profile, outBase, customBuildDir) {
+function makeOutputs(profile, outBase, customBuildDir, androidBuildKind) {
   let dir;
   if (customBuildDir && String(customBuildDir).trim()) {
     const trimmed = String(customBuildDir).trim();
@@ -269,7 +269,14 @@ function makeOutputs(profile, outBase, customBuildDir) {
   const prod = safeName(profile.productName || profile.name);
   let output = '';
   if (profile.target === 13) {
-    output = path.join(dir, prod + '.apk');
+    const bkind = String(profile.androidBuildKind || androidBuildKind || 'apk').toLowerCase();
+    if (bkind === 'aab') {
+      output = path.join(dir, prod + '.aab');
+    } else if (bkind === 'gradleproject' || bkind === 'gradle' || bkind === 'asproject') {
+      output = path.join(dir, prod + '-ASProject'); // 导出 Android Studio 工程目录
+    } else {
+      output = path.join(dir, prod + '.apk');
+    }
   } else if (profile.target === 9) {
     output = path.join(dir, 'iOS'); // Xcode 工程输出目录
   } else if (profile.target === 4) {
@@ -619,13 +626,41 @@ function finalizeArtifact(profile, ctx, durationMs) {
 
   let finalFile = null, sizeBytes = 0, kind = 'zip';
   if (isAndroid) {
-    kind = 'apk';
-    const src = findArtifact(ctx.dir, /\.(apk|aab)$/i);
-    if (!src) throw new Error('构建目录中找不到 APK/AAB 产物: ' + ctx.dir);
-    const ext = path.extname(src) || '.apk';
-    finalFile = path.join(finalDir, formattedBaseName + ext);
-    fs.renameSync(src, finalFile);
-    sizeBytes = fs.statSync(finalFile).size;
+    const bkind = String(ctx.androidBuildKind || 'apk').toLowerCase();
+    if (bkind === 'gradleproject' || bkind === 'gradle' || bkind === 'asproject') {
+      // 导出 Android Studio 工程：输出为目录，按 Xcode 工程方式归档（自动 ZIP）
+      let projDir = ctx.output;
+      if (!fs.existsSync(projDir) || !fs.statSync(projDir).isDirectory()) {
+        projDir = path.join(ctx.dir, prod + '-ASProject');
+        if (!fs.existsSync(projDir)) projDir = ctx.dir;
+      }
+      fs.writeFileSync(path.join(projDir, 'build-info.txt'),
+        ['Profile: ' + profile.name, 'Target: Android (Gradle Project)', 'Product: ' + prod,
+         'Version: ' + (version || ''), 'BuildNumber: ' + (buildNo != null ? buildNo : ''),
+         'DEV: ' + (ctx.dev ? 'true' : 'false'), 'Date: ' + dateStr].join('\n') + '\n', 'utf8');
+      if (autoZip) {
+        kind = 'zip';
+        finalFile = path.join(finalDir, formattedBaseName + '.zip');
+        writeZip(projDir, finalFile, profile.target);
+        sizeBytes = fs.statSync(finalFile).size;
+      } else {
+        kind = 'asproj';
+        finalFile = projDir;
+        try {
+          sizeBytes = collectZipFiles(projDir, profile.target).reduce((acc, f) => {
+            try { return acc + fs.statSync(f).size; } catch { return acc; }
+          }, 0);
+        } catch { sizeBytes = 0; }
+      }
+    } else {
+      kind = 'apk';
+      const src = findArtifact(ctx.dir, /\.(apk|aab)$/i);
+      if (!src) throw new Error('构建目录中找不到 APK/AAB 产物: ' + ctx.dir);
+      const ext = path.extname(src) || '.apk';
+      finalFile = path.join(finalDir, formattedBaseName + ext);
+      fs.renameSync(src, finalFile);
+      sizeBytes = fs.statSync(finalFile).size;
+    }
   } else if (isIOS) {
     let xcodeDir = ctx.output;
     if (!fs.existsSync(xcodeDir) || !fs.statSync(xcodeDir).isDirectory()) {
@@ -751,6 +786,10 @@ function composeBatchmode(eng, ctx) {
   }
   // 安卓构建号（bundleVersionCode）
   if (ctx.profile.target === 13 && ctx.versionCode) args.push('-versionCode', String(ctx.versionCode));
+  // 安卓构建目标类型（apk / aab / gradleProject 导出 AS 工程）
+  if (ctx.profile.target === 13 && ctx.androidBuildKind && String(ctx.androidBuildKind).toLowerCase() !== 'apk') {
+    args.push('-androidBuildKind', String(ctx.androidBuildKind).toLowerCase());
+  }
   return { exe: eng.unityExe, args, display: [quote(eng.unityExe)].concat(args.map(quote)).join(' ') };
 }
 
@@ -771,6 +810,7 @@ function composeTemplate(eng, ctx) {
     '{keyaliasPass}': ctx.sign && ctx.sign.keyaliasPass || '',
     '{keystoreName}': ctx.sign && ctx.sign.keystoreName || '',
     '{keyaliasName}': ctx.sign && ctx.sign.keyaliasName || '',
+    '{androidBuildKind}': (ctx.profile.target === 13 && ctx.androidBuildKind && String(ctx.androidBuildKind).toLowerCase() !== 'apk') ? ('-androidBuildKind ' + String(ctx.androidBuildKind).toLowerCase()) : '',
     '{unityExe}': eng.unityExe || '',
   };
   for (const k in map) t = t.split(k).join(map[k]);
@@ -847,7 +887,7 @@ function runOne(engine, profile, ctx, idx) {
       }
     } catch { /* */ }
     fs.mkdirSync(ctx.dir, { recursive: true });
-    broadcast({ type: 'profile-start', index: idx, name: profile.name, target: profile.targetName, cmd: cmd.display, output: ctx.output, versionCode: ctx.versionCode || ctx.buildNo || null, dev: !!ctx.dev, buildAddressables: !!ctx.buildAddressables });
+    broadcast({ type: 'profile-start', index: idx, name: profile.name, target: profile.targetName, cmd: cmd.display, output: ctx.output, versionCode: ctx.versionCode || ctx.buildNo || null, dev: !!ctx.dev, buildAddressables: !!ctx.buildAddressables, androidBuildKind: ctx.androidBuildKind || 'apk' });
 
     const pstate = { stage: '启动…', pct: null, lastEmit: 0, lastStage: '', lastPct: -1 };
     if (job && job.progress) job.progress[idx] = { stage: pstate.stage, pct: null };
@@ -1039,13 +1079,6 @@ async function startJob(req) {
   const buildNumberRaw = Number(req.buildNumber);
   const buildNumberAuto = !Number.isFinite(buildNumberRaw) || buildNumberRaw === -1;
 
-  // 打包前自动更新版本管理分组（可选）：更新失败 / 取消则终止打包
-  const vcsPreCfg = req.vcsBeforeBuild || config.vcsBeforeBuild || {};
-  const preEnabled = !!vcsPreCfg.enabled;
-  const preGroupIds = Array.isArray(vcsPreCfg.groupIds) ? vcsPreCfg.groupIds.map(String) : [];
-  const preNodes = preEnabled ? nodeIdsOfGroups(preGroupIds) : [];
-  const preGroupNames = preEnabled ? groupNamesOf(preGroupIds) : [];
-
   job = { state: 'starting', queue: profiles, index: 0, lines: [], progress: {}, outputs: [], child: null, exitCode: null, timer: null, stopOnError, cancel: false, lastFail: null };
   broadcast({ type: 'job-start', count: profiles.length });
 
@@ -1063,26 +1096,33 @@ async function startJob(req) {
   const run = async () => {
     job.state = 'running';
     try {
-      // 步骤 0：打包前版本管理自动更新（revert → 远端在线才 pull / update）→ 继续打包
-      if (preNodes.length) {
-        const pre = await runPreBuildVcsUpdate(preNodes, preGroupNames);
-        if (!pre.continue) {
-          broadcast({ type: 'job-end', ok: false,
-            reason: pre.reason === 'cancelled' ? 'vcsPreCancelled' : 'vcsPreFail',
-            message: pre.reason === 'cancelled' ? '打包前版本更新已取消' : '打包前版本更新存在失败项，已终止打包' });
-          return;
-        }
-      } else if (preEnabled) {
-        broadcast({ type: 'notice', text: '[版本管理] 打包前更新已启用，但所选分组为空（或未选择任何分组），跳过该步骤' });
-      }
-
       for (let i = 0; i < profiles.length; i++) {
         if (job.cancel) { broadcast({ type: 'job-end', ok: false, reason: 'cancelled' }); return; }
         job.index = i;
         const profile = profiles[i];
+
+        // 每个构建配置单独配置「版本更新组」：构建该配置前先更新（revert → 分支切换 → pull/update）
+        const preGids = Array.isArray(profile.vcsGroupIds) ? profile.vcsGroupIds.map(String) : [];
+        const preNodes = preGids.length ? nodeIdsOfGroups(preGids) : [];
+        if (preNodes.length) {
+          const pre = await runPreBuildVcsUpdate(preNodes, groupNamesOf(preGids), `构建配置「${profile.name}」`, i);
+          if (job.cancel) { broadcast({ type: 'job-end', ok: false, reason: 'cancelled' }); return; }
+          if (!pre.continue) {
+            if (pre.reason === 'error') { broadcast({ type: 'job-end', ok: false, reason: 'error', message: pre.message }); return; }
+            if (job.stopOnError) {
+              broadcast({ type: 'job-end', ok: false, reason: 'vcsPreFail', index: i });
+              return;
+            }
+            broadcast({ type: 'notice', text: `[版本管理] 「${profile.name}」构建前版本更新存在失败项，已跳过该构建配置（失败即停已关闭）` });
+            broadcast({ type: 'profile-end', index: i, ok: false, skipped: true });
+            continue;
+          }
+        }
+
         const sign = profile.sign || {};
         const customDir = profile.customBuildDir || sign.customBuildDir || null;
-        const ctx = makeOutputs(profile, outBase, customDir);
+        const resolvedAndroidKind = String(profile.androidBuildKind || sign.androidBuildKind || req.androidBuildKind || 'apk').toLowerCase();
+        const ctx = makeOutputs(profile, outBase, customDir, resolvedAndroidKind);
         ctx.projectAbs = projectAbs;
         ctx.outBase = outBase;
         ctx.successDir = config.successDir || '构建成功';
@@ -1090,6 +1130,7 @@ async function startJob(req) {
         ctx.dev = profile.dev != null ? profile.dev : (sign.dev != null ? sign.dev : !!req.dev);
         ctx.buildAddressables = profile.buildAddressables != null ? profile.buildAddressables : (sign.buildAddressables != null ? sign.buildAddressables : !!req.buildAddressables);
         ctx.addressablesMethod = profile.addressablesMethod || sign.addressablesMethod || req.addressablesMethod || null;
+        ctx.androidBuildKind = resolvedAndroidKind;
         ctx.nameTemplate = profile.nameTemplate || sign.nameTemplate || req.artifactNameTemplate || cfg('artifactNameTemplate', '');
         ctx.autoZip = profile.autoZip != null ? profile.autoZip : (sign.autoZip != null ? sign.autoZip : (req.autoZip != null ? req.autoZip : cfg('defaultAutoZip', true)));
 
@@ -1145,7 +1186,7 @@ function stopJob() {
   if (!job || job.state === 'done') return { ok: false, error: '没有运行中的任务' };
   job.cancel = true;
   killChild();
-  if (vcs && vcs.preBuild) killProc(vcs.child); // 打包前更新阶段：一并强杀正在执行的 svn/git 进程
+  if (vcs && vcs.preBuild) killProc(vcs.child); // 构建前版本更新阶段：一并强杀正在执行的 svn/git 进程
   return { ok: true };
 }
 
@@ -1378,6 +1419,10 @@ function stopCheck() {
  * 「分组」把若干节点聚合为组。支持单节点 / 分组 / 全部一键更新；
  * 任何更新前都会先「还原未提交更改」——Git：`git reset --hard`；SVN：`svn revert -R .`——
  * 再执行 `git pull` / `svn update`。路径为空或未检测到工作副本的节点一律跳过，不执行任何更新。
+ * 节点可配置「目标分支」：配置分支与当前分支不一致时，更新顺序为
+ * 先还原未提交更改 → 尝试切换分支（Git：checkout，失败则基于远端创建本地跟踪分支；
+ * SVN：svn switch 到分支 URL）→ 再 pull / update。
+ * 每个「构建配置」（队列中的 Profile）可单独配置构建前要更新的版本更新组。
  * 节点与分组配置存于 config.json 的 `vcs` 字段。
  */
 
@@ -1732,7 +1777,9 @@ async function gitRevert(node, index, abs, timeoutMs) {
  * 更新单个节点流程：
  *   1) 一律先「还原未提交更改」（Git 健壮还原 / SVN revert -R .）
  *   2) 检测远端：不在线或没有远端服务器 → 只执行 revert，不 pull / update
- *   3) 在线且有远端 → 若指定分支则先切换分支（git checkout / svn switch），再 pull / update
+ *   3) 在线且有远端 → 配置分支与当前分支不一致时先还原再尝试切换分支
+ *      （Git：checkout → 失败则 fetch 远端后基于远端创建本地跟踪分支；SVN：svn switch）
+ *      再 pull / update
  * 路径为空 → skipped（不执行任何操作）；未检测到工作副本 → skipped。
  */
 async function updateVcsNode(node, index, timeoutMs) {
@@ -1772,18 +1819,30 @@ async function updateVcsNode(node, index, timeoutMs) {
         rem.hasRemote ? '远端不可达，仅还原未提交更改（未执行 pull）' : '无远端服务器，仅还原未提交更改（未执行 pull）');
     }
 
-    // 指定分支：切换后再拉取
+    // 指定分支：先还原（上方已执行）→ 尝试切换到该分支 → 再拉取
     const branch = String(node.branch || '').trim();
     if (branch) {
       const cur = String(runSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], abs).stdout || '').trim();
       if (cur !== branch) {
-        const co = await runVcsProc(node, index, `切换到分支 ${branch}`, 'git', ['checkout', branch], abs, timeoutMs);
+        let co = await runVcsProc(node, index, `切换到分支 ${branch}`, 'git', ['checkout', branch], abs, timeoutMs);
         if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
-        if (!co.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '切换分支失败（本地与远端均无该分支？）');
+        // 本地没有该分支：若远端在线且有该分支，先 fetch 再基于远端创建本地跟踪分支
+        if (!co.ok && rem.online && rem.remoteName) {
+          pushVcsLine(`（本地不存在分支 ${branch}，尝试从远端 ${rem.remoteName} 检出跟踪分支）\n`);
+          await runVcsProc(node, index, `拉取远端分支 ${branch}`, 'git', ['fetch', rem.remoteName, branch], abs, timeoutMs);
+          co = await runVcsProc(node, index, `从远端创建并切换到分支 ${branch}`, 'git', ['checkout', '-b', branch, '--track', rem.remoteName + '/' + branch], abs, timeoutMs);
+          if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+        }
+        if (!co.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '切换分支失败（已尝试本地检出与基于远端创建，本地与远端均无该分支？）');
       }
     }
-    const u = await runVcsProc(node, index, '拉取最新代码', 'git', ['pull'], abs, timeoutMs);
+    let u = await runVcsProc(node, index, '拉取最新代码', 'git', ['pull'], abs, timeoutMs);
     if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+    // 分支无上游（upstream）时 pull 会失败：退回按远端 + 分支名拉取
+    if (!u.ok && branch && rem.online && rem.remoteName) {
+      u = await runVcsProc(node, index, `拉取远端 ${rem.remoteName}/${branch}`, 'git', ['pull', rem.remoteName, branch], abs, timeoutMs);
+      if (vcs && vcs.cancel) return vcsNodeResult(node, index, name, type, 'cancelled', false, '已取消');
+    }
     if (!u.ok) return vcsNodeResult(node, index, name, type, 'fail', false, '更新失败（退出码 ' + u.exitCode + '）');
     return vcsNodeResult(node, index, name, type, 'ok', true, branch ? ('更新成功（分支 ' + branch + '）') : '更新成功');
   }
@@ -1912,17 +1971,19 @@ function groupNamesOf(groupIds) {
 }
 
 /**
- * 在批量构建任务内执行「打包前版本更新」：
- * 复用现有 vcs 更新机制（revert → 远端在线才 pull / update / 分支切换），
+ * 在批量构建任务内执行「构建前版本更新」：每个构建配置（队列中的 Profile）
+ * 单独配置自己的版本更新组，构建该配置前执行其分组更新。
+ * 复用现有 vcs 更新机制（revert → 分支切换 → 远端在线才 pull / update），
  * 事件带 preBuild=true 经 SSE 推送；结束后 vcs 全局状态还原为 null。
- * 返回 { continue } —— 任一节点失败或取消则终止打包。
+ * 返回 { continue } —— 任一节点失败或取消则该配置停止构建。
  */
-async function runPreBuildVcsUpdate(nodes, groupNames) {
+async function runPreBuildVcsUpdate(nodes, groupNames, label, profileIndex) {
   const timeoutMs = 30 * 60000;
+  const who = label || '构建前';
   vcs = { state: 'running', nodes, index: 0, lines: [], results: {}, child: null, cancel: false, end: null, preBuild: true, startedAt: new Date().toISOString() };
-  broadcast({ type: 'notice', text: `[版本管理] 打包前自动更新启动（${groupNames.join('、') || '选定分组'}，共 ${nodes.length} 个节点）` });
-  pushVcsLine(`\n════════ 【打包前自动更新】分组：${groupNames.join('、') || '—'} ｜ 节点 ${nodes.length} 个 ════════\n`);
-  broadcast({ type: 'vcs-start', count: nodes.length, ids: nodes.map(n => n.id), preBuild: true, groupNames });
+  broadcast({ type: 'notice', text: `[版本管理] ${who} 版本更新启动（分组：${groupNames.join('、') || '—'}，共 ${nodes.length} 个节点）` });
+  pushVcsLine(`\n════════ 【构建前版本更新】${who} ｜ 分组：${groupNames.join('、') || '—'} ｜ 节点 ${nodes.length} 个 ════════\n`);
+  broadcast({ type: 'vcs-start', count: nodes.length, ids: nodes.map(n => n.id), preBuild: true, groupNames, label: who, profileIndex });
   try {
     for (let i = 0; i < nodes.length; i++) {
       if (vcs.cancel || (job && job.cancel)) {
@@ -1940,19 +2001,19 @@ async function runPreBuildVcsUpdate(nodes, groupNames) {
       }
     }
     const s = summarizeVcs(vcs.results);
-    pushVcsLine(`\n════════ 打包前更新结束：更新成功 ${s.ok} ｜ 仅还原 ${s.partial} ｜ 失败 ${s.fail} ｜ 跳过 ${s.skipped} ════════\n`);
+    pushVcsLine(`\n════════ ${who} 版本更新结束：更新成功 ${s.ok} ｜ 仅还原 ${s.partial} ｜ 失败 ${s.fail} ｜ 跳过 ${s.skipped} ════════\n`);
     const ok = s.fail === 0 && s.cancelled === 0;
     broadcast({ type: 'vcs-end', preBuild: true, ok, summary: s });
     broadcast({ type: 'notice', text: ok
-      ? `[版本管理] 打包前更新完成：成功 ${s.ok}，仅还原 ${s.partial}，跳过 ${s.skipped}，继续打包`
-      : `[版本管理] 打包前更新存在失败（失败 ${s.fail}），终止打包` });
-    return { continue: ok, reason: ok ? null : 'vcsPreFail' };
+      ? `[版本管理] ${who} 版本更新完成：成功 ${s.ok}，仅还原 ${s.partial}，跳过 ${s.skipped}，继续构建`
+      : `[版本管理] ${who} 版本更新存在失败（失败 ${s.fail}），停止构建` });
+    return { continue: ok, reason: ok ? null : 'vcsPreFail', message: null };
   } catch (e) {
-    console.error('[vcs] 打包前更新异常:', e);
+    console.error('[vcs] 构建前更新异常:', e);
     broadcast({ type: 'vcs-end', preBuild: true, ok: false, reason: 'error', message: e.message });
-    return { continue: false, reason: 'error' };
+    return { continue: false, reason: 'error', message: e.message };
   } finally {
-    vcs = null; // 打包前更新不占用独立 vcs 状态
+    vcs = null; // 构建前更新不占用独立 vcs 状态
   }
 }
 
@@ -2024,6 +2085,8 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body) { sendJson(res, 400, { error: 'bad body' }); return; }
       config = { ...config, ...body };
+      // 版本更新组已改为按构建配置（Profile）单独配置，清理旧的全局配置键
+      delete config.vcsBeforeBuild;
       saveConfig();
       sendJson(res, 200, { ok: true, config });
       return;
@@ -2077,12 +2140,14 @@ const server = http.createServer(async (req, res) => {
       const items = profiles.map(pr => {
         const sign = Object.assign({}, body.sign || {}, pr.sign || {});
         const customDir = pr.customBuildDir || sign.customBuildDir || null;
-        const ctx = makeOutputs(pr, outBase, customDir);
+        const resolvedAndroidKind = String(pr.androidBuildKind || sign.androidBuildKind || body.androidBuildKind || 'apk').toLowerCase();
+        const ctx = makeOutputs(pr, outBase, customDir, resolvedAndroidKind);
         ctx.projectAbs = projectAbs;
         ctx.sign = sign;
         ctx.dev = pr.dev != null ? pr.dev : (sign.dev != null ? sign.dev : !!body.dev);
         ctx.buildAddressables = pr.buildAddressables != null ? pr.buildAddressables : (sign.buildAddressables != null ? sign.buildAddressables : !!body.buildAddressables);
         ctx.addressablesMethod = pr.addressablesMethod || sign.addressablesMethod || body.addressablesMethod || null;
+        ctx.androidBuildKind = resolvedAndroidKind;
         ctx.nameTemplate = pr.nameTemplate || sign.nameTemplate || body.artifactNameTemplate || cfg('artifactNameTemplate', '');
         ctx.autoZip = pr.autoZip != null ? pr.autoZip : (sign.autoZip != null ? sign.autoZip : (body.autoZip != null ? body.autoZip : cfg('defaultAutoZip', true)));
 
@@ -2112,25 +2177,25 @@ const server = http.createServer(async (req, res) => {
           buildNo: buildNo || null,
           dev: ctx.dev,
           buildAddressables: ctx.buildAddressables,
+          androidBuildKind: ctx.androidBuildKind,
           autoZip: ctx.autoZip,
           customBuildDir: customDir || null,
           previewName,
           archiveDir: path.join(outBase, (body.successDir || '').trim() || cfg('successDir', '构建成功'), pr.name + '-<时间戳>'),
+          // 该构建配置单独配置的版本更新组
+          vcsBeforeBuild: (() => {
+            const gids = Array.isArray(pr.vcsGroupIds) ? pr.vcsGroupIds.map(String) : [];
+            const pn = gids.length ? nodeIdsOfGroups(gids) : [];
+            return {
+              enabled: pn.length > 0,
+              groups: groupNamesOf(gids),
+              nodeCount: pn.length,
+              nodeNames: pn.map(n => n.name || n.id),
+            };
+          })(),
         };
       });
-      const vcsPreCfg = body.vcsBeforeBuild || config.vcsBeforeBuild || {};
-      const preEnabled = !!vcsPreCfg.enabled;
-      const preGroupIds = Array.isArray(vcsPreCfg.groupIds) ? vcsPreCfg.groupIds.map(String) : [];
-      const preNodes = preEnabled ? nodeIdsOfGroups(preGroupIds) : [];
-      sendJson(res, 200, {
-        ok: true, items, engine,
-        vcsBeforeBuild: {
-          enabled: preEnabled,
-          groups: groupNamesOf(preGroupIds),
-          nodeCount: preNodes.length,
-          nodeNames: preNodes.map(n => n.name || n.id),
-        },
-      });
+      sendJson(res, 200, { ok: true, items, engine });
       return;
     }
 

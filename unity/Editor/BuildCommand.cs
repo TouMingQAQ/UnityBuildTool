@@ -22,6 +22,7 @@ namespace TBuildTool.Editor
     ///     [-wallpaperTarget 13] \                     （可选，13=Android, 19=Win64, 5=Win86, 9=iOS）
     ///     [-dev true] \                               （可选，开启 Development Build）
     ///     [-buildAddressables true/方法名] \          （可选，构建前先打包 Addressables）
+    ///     [-androidBuildKind apk|aab|gradleProject] \ （可选，安卓构建目标：APK / AAB / 导出 Android Studio 工程，默认 apk）
     ///     [-keystoreName KeyStore/user.keystore] \   （可选，安卓签名文件覆盖）
     ///     [-keystoreAlias key] \                      （可选，别名覆盖）
     ///     [-keystorePass <keystore密码>] \            （可选，安卓必填否则签名失败）
@@ -42,6 +43,7 @@ namespace TBuildTool.Editor
             string keyaliasPass  = GetArg(args, "-keyaliasPass");
             string devArg        = GetArg(args, "-dev") ?? GetArg(args, "-development");
             string addrArg       = GetArg(args, "-buildAddressables") ?? GetArg(args, "-addressables");
+            string androidKind   = GetArg(args, "-androidBuildKind");
 
             if (string.IsNullOrEmpty(profilePath) || string.IsNullOrEmpty(outputPath))
             {
@@ -75,6 +77,9 @@ namespace TBuildTool.Editor
 
             // 安卓签名注入（仅 Android 目标）
             ApplyAndroidSigning(target, keystoreName, keystoreAlias, keystorePass, keyaliasPass);
+
+            // 安卓构建目标类型（仅 Android 目标）：apk（默认）/ aab / gradleProject（导出 Android Studio 工程）
+            ApplyAndroidBuildKind(target, androidKind);
 
             // 安卓构建号（bundleVersionCode）：网页工具自动递增后通过 -versionCode 传入
             string versionCodeArg = GetArg(args, "-versionCode");
@@ -366,6 +371,45 @@ namespace TBuildTool.Editor
         private static string StripInproject(string p)
         {
             return p.StartsWith("{inproject}:") ? p.Substring("{inproject}:".Length).Trim() : p;
+        }
+
+        /// <summary>
+        /// 安卓构建目标类型：apk（默认） / aab（Google Play 分包） / gradleProject（导出 Android Studio 工程）。
+        /// 通过 EditorUserBuildSettings 全局开关控制（Unity 6000.3 Build Profile 构建同样生效，
+        /// 已用真实编辑器探针验证 buildAppBundle / exportAsGoogleAndroidProject 均存在）。
+        /// </summary>
+        private static void ApplyAndroidBuildKind(BuildTarget target, string kind)
+        {
+            if (target != BuildTarget.Android)
+                return;
+
+            if (string.IsNullOrEmpty(kind))
+            {
+                Debug.Log("[TBuildTool] 安卓构建目标未指定，默认 APK (.apk)");
+                return;
+            }
+
+            switch (kind.Trim().ToLowerInvariant())
+            {
+                case "aab":
+                    EditorUserBuildSettings.buildAppBundle = true;
+                    EditorUserBuildSettings.exportAsGoogleAndroidProject = false;
+                    Debug.Log("[TBuildTool] 安卓构建目标 → AAB (.aab)");
+                    break;
+                case "gradleproject":
+                case "gradle":
+                case "asproject":
+                case "androidstudio":
+                    EditorUserBuildSettings.buildAppBundle = false;
+                    EditorUserBuildSettings.exportAsGoogleAndroidProject = true;
+                    Debug.Log("[TBuildTool] 安卓构建目标 → 导出 Android Studio 工程（Gradle 工程目录）");
+                    break;
+                default:
+                    EditorUserBuildSettings.buildAppBundle = false;
+                    EditorUserBuildSettings.exportAsGoogleAndroidProject = false;
+                    Debug.Log("[TBuildTool] 安卓构建目标 → APK (.apk)（未知类型 " + kind + "，按默认 APK 处理）");
+                    break;
+            }
         }
 
         private static string GetArg(string[] args, string name)

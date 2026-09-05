@@ -13,7 +13,10 @@ TBuildTool 的**外部打包工具**部分：通过网页界面批量打包 Unit
 - 每个 Profile 一个工作目录：`<输出目录>/<Profile名>/`（如 `Builds/WallpaperAndroid/`），
   重复构建直接覆盖，目录里保留 Unity 产物与 `build.log`。
 - 构建成功后，包体会被单独**挪到成功归档目录** `Builds/构建成功/<Profile名>-<yyyyMMdd_HHmmss>/`：
-  - 安卓：`MiSideWallpaper_v<版本>_b<构建号>_<时间戳>.apk`
+  - 安卓（默认 APK）：`MiSideWallpaper_v<版本>_b<构建号>_<时间戳>.apk`
+  - 安卓 AAB（Google Play 分包）：`..._<时间戳>.aab`
+  - 安卓「导出 Android Studio 工程」：导出为 `<Product>-ASProject` Gradle 工程目录，
+    **自动压缩为 zip** 归档（与 Xcode 工程一致的处理方式）
   - Windows：整个构建目录（exe + `_Data`）**自动压缩为 zip** `MiSideWallpaper_v<版本>_b<构建号>_<时间戳>.zip`
 - 每个归档目录附带 `build-info.txt`（Profile / 目标 / 包版本 / 构建号 / 日期 / 输出 / 大小 / 耗时），
   Windows 的 zip 内也会打包一份。
@@ -38,6 +41,16 @@ TBuildTool 的**外部打包工具**部分：通过网页界面批量打包 Unit
        密码每次构建手动输入、不写入配置文件。留空则沿用 Profile 原有签名配置。
      - 输出目录默认 `<项目>\Builds`，可改；
    - ④ 「预览命令」确认 →「开始批量打包」→ 实时查看每个 Profile 状态与日志，「停止」可中断。
+
+## 安卓构建目标（APK / AAB / 导出 AS 工程）
+
+- 每个安卓 Profile 可选择构建目标：**APK（默认）** / **AAB（Google Play 分包）** /
+  **导出 Android Studio 工程（Gradle 工程目录，自动 ZIP 归档）**。
+- 位置：「③ 引擎设置」提供**全局默认**（`defaultAndroidBuildKind`，保存到 `config.json`）；
+  每个 Profile 在 ⚙ 独立配置弹窗中可**单独覆盖**（保存到该 Profile 的 `profileConfigs`）。
+- 底层由 Unity 端 `BuildCommand` 接收 `-androidBuildKind apk|aab|gradleProject`，
+  设置 `EditorUserBuildSettings.buildAppBundle` / `exportAsGoogleAndroidProject` 后构建。
+- 导出 AS 工程后可用 Android Studio 打开，自行完成 Gradle 编译 / 签名 / 上架。
 
 ## 环境编译检测（独立 Tab）
 
@@ -79,18 +92,25 @@ Build Target 5 / 19 / 13 / 9 / 4）逐条执行一次真实编译检测。
   需要"还原未暂存但不丢已暂存/未跟踪"可用预设「只还原未暂存」（`git checkout -- .`）；
   需要连新建文件一起清可用「还原并清理未跟踪」（`git reset --hard && git clean -fd`）。
   随后检测**远端服务器**：**不在线或没有远端服务器 → 只执行还原，不执行 pull / update**
-  （节点标记为「仅还原」）；在线且有远端时才执行 `git pull` / `svn update`，
-  并先按指定分支切换（`git checkout <分支>` / `svn switch <分支URL>`）。
+  （节点标记为「仅还原」）；在线且有远端时才执行 `git pull` / `svn update`。
+  **节点配置的「目标分支」与当前分支不一致时**：先还原未提交更改，再**尝试切换分支**
+  （Git：`git checkout <分支>`，本地不存在该分支时自动 `git fetch <远端> <分支>` 后
+  基于远端创建本地跟踪分支 `git checkout -b <分支> --track <远端>/<分支>`；
+  SVN：`svn switch <分支URL>`），成功后 `git pull`（无上游时退回 `git pull <远端> <分支>`）/
+  `svn update`。本地与远端均无该分支时节点标记为失败。
   **路径为空或未检测到 Git / SVN 工作副本的节点直接跳过，不执行任何更新操作**。
 - 更新过程经 SSE 实时推送日志与节点状态（成功 / 仅还原 / 失败 / 跳过 / 已取消），可随时「停止」；
   结束后自动刷新各节点最新状态。与批量构建、环境编译检测互斥运行。
-- **打包前自动更新（构建钩子）**：在「引擎与高级配置」页可勾选「打包前版本管理自动更新」并多选更新分组；
-  「开始批量打包」时会先按「还原未提交 → 远端在线才 pull / update」逐个更新选定分组的节点，
-  **全部成功后才开始打包**；任一节点失败或取消将终止打包（预览命令里会显示该步骤与涉及节点）。
+- **构建前自动更新（每个构建配置单独配置）**：在队列项「⚙ 配置」弹窗中勾选
+  「构建前自动更新版本管理分组」并多选更新分组后，批量打包到该配置时会先
+  按「还原未提交 → 分支切换 → 远端在线才 pull / update」逐个更新所选分组的节点，
+  **全部成功后才开始构建该配置**；任一节点失败或取消将终止打包
+  （关闭「失败即停」则跳过该配置继续下一个）。命令预览里会显示每个配置的更新分组与涉及节点。
 - 后端 API：`POST /api/vcs/save`、`POST /api/vcs/probe`、`POST /api/vcs/update`、`POST /api/vcs/stop`、
   `GET /api/vcs/state`；SSE 事件：`vcs-hello / vcs-start / vcs-node-start / vcs-line / vcs-node-end / vcs-end`
-  （打包前更新时 `vcs-*` 事件带 `preBuild=true`）。
-- 节点与分组配置保存在 `config.json` 的 `vcs` 字段（重启后自动恢复）。
+  （构建前更新时 `vcs-*` 事件带 `preBuild=true`）。
+- 节点与分组配置保存在 `config.json` 的 `vcs` 字段（重启后自动恢复）；
+  各构建配置的版本更新组保存在 `profileConfigs` 对应条目（`vcsGroupIds` 字段）。
 
 ## 两种打包引擎
 

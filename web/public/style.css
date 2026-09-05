@@ -1152,6 +1152,9 @@ body {
 .tag-badge.shared { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.35); }
 .tag-badge.signed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
 .tag-badge.nozip { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }
+.tag-badge.aab { background: rgba(34, 211, 238, 0.15); color: #67e8f9; border: 1px solid rgba(34, 211, 238, 0.35); }
+.tag-badge.asproj { background: rgba(250, 204, 21, 0.15); color: #fde047; border: 1px solid rgba(250, 204, 21, 0.35); }
+.tag-badge.vcs { background: rgba(251, 146, 60, 0.15); color: #fdba74; border: 1px solid rgba(251, 146, 60, 0.35); }
 
 .queue-list li button:not(.cfg-btn) {
   background: rgba(255, 255, 255, 0.05);
@@ -1293,6 +1296,11 @@ body {
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 4px;
+}
+
+.chips-disabled {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .chip-param {
