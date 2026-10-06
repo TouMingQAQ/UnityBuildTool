@@ -9,8 +9,8 @@
  *   - 按顺序逐个调用命令行打包（Unity.exe -batchmode 或自定义 CLI 模板）
  *   - SSE 实时推送每步日志，支持停止、失败即停等策略
  *
- * 启动：node server.js   （自动打开浏览器 http://127.0.0.1:8787）
- * 环境变量：PORT 端口（默认 8787）；NO_OPEN=1 时不自动开浏览器
+ * 启动：node server.js   （自动打开浏览器，默认 http://127.0.0.1:8787）
+ * 环境变量：PORT 端口（默认取 config.json 的 serverPort，再默认 8787，被占用时自动顺延）；NO_OPEN=1 时不自动开浏览器
  */
 
 const http = require('http');
@@ -22,16 +22,6 @@ const zlib = require('zlib');
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
 const CONFIG_PATH = path.join(ROOT, 'config.json');
-const PORT = Number(process.env.PORT || 8787);
-const HOST = '127.0.0.1';
-const AUTO_OPEN = process.env.NO_OPEN !== '1';
-
-// BuildTarget 枚举中我们关心的目标：Android(13)、Win64(19)、Win86(5)、iOS(9)、macOS(4)
-const TARGETS = { 5: 'Windows (x86)', 19: 'Windows (x64)', 13: 'Android', 9: 'iOS', 4: 'macOS' };
-const ALLOWED_TARGETS = new Set([5, 13, 19, 9, 4]);
-// 环境编译检测结果目录（相对本工具目录）
-const CHECK_RESULTS_DIR = path.join(__dirname, 'check-results');
-
 // ─────────────────────────── 配置 ───────────────────────────
 
 function loadConfig() {
@@ -46,6 +36,8 @@ function loadConfig() {
 }
 let config = loadConfig();
 
+const BASE_PORT = Number(process.env.PORT || (config.serverPort || 8787));
+
 function saveConfig() {
   try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); } catch (e) {
     console.error('[config] 保存失败:', e.message);
@@ -56,6 +48,15 @@ function cfg(key, def) {
   const v = config[key];
   return v === undefined || v === null || v === '' ? def : v;
 }
+
+const HOST = '127.0.0.1';
+const AUTO_OPEN = process.env.NO_OPEN !== '1';
+
+// BuildTarget 枚举中我们关心的目标：Android(13)、Win64(19)、Win86(5)、iOS(9)、macOS(4)
+const TARGETS = { 5: 'Windows (x86)', 19: 'Windows (x64)', 13: 'Android', 9: 'iOS', 4: 'macOS' };
+const ALLOWED_TARGETS = new Set([5, 13, 19, 9, 4]);
+// 环境编译检测结果目录（相对本工具目录）
+const CHECK_RESULTS_DIR = path.join(__dirname, 'check-results');
 
 // ─────────────────────────── 工具函数 ───────────────────────────
 
@@ -2426,7 +2427,23 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
-  server.listen(PORT, HOST, () => {
+  // 端口被占用时向上顺延尝试的次数：env PORT_TRIES > config.json 的 serverPortTries > 默认 100
+  const MAX_PORT_TRIES = Number(process.env.PORT_TRIES || config.serverPortTries || 100);
+  let tried = 0;
+  let boundPort = BASE_PORT;
+  server.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE' && tried < MAX_PORT_TRIES) {
+      tried += 1;
+      boundPort = BASE_PORT + tried;
+      console.warn(`[server] 端口 ${boundPort - 1} 已被占用, 改用 ${boundPort} ...`);
+      server.listen(boundPort, HOST);
+      return;
+    }
+    console.error('[server] 监听失败:', e.message);
+    process.exit(1);
+  });
+  server.listen(boundPort, HOST, () => {
+    const PORT = server.address().port;
     console.log('====================================================');
     console.log('  TBuildTool · 本地批量打包工具');
     console.log(`  地址: http://${HOST}:${PORT}`);
