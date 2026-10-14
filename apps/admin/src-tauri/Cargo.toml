@@ -1,0 +1,24 @@
+[package]
+name = "tbuildtool-admin"
+version = "0.1.0"
+description = "TBuildTool 管理端"
+authors = ["TBuildTool"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.2"
+open = "5"
+tiny_http = "0.12"
+tempfile = "3"
+sha2 = "0.10"
+regex = "1"
+chrono = { version = "0.4", features = ["clock"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+libc = "0.2"

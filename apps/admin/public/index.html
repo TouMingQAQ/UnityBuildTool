@@ -3,83 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TBuildTool · MiSide 壁纸 批量构建工具</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css">
+  <title>管理端 · TBuildTool</title>
+
+
+  <meta name="referrer" content="no-referrer">
+  <link rel="stylesheet" href="/admin/style.css">
 </head>
 <body>
   <div class="app-layout">
-    <!-- ═════════ 侧边栏 Sidebar ═════════ -->
-    <aside class="sidebar">
-      <div class="sidebar-brand">
-        <div class="brand-logo">
-          <svg class="logo-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-          </svg>
-        </div>
-        <div class="brand-meta">
-          <div class="brand-title">TBuildTool</div>
-        </div>
-      </div>
-
-      <div class="sidebar-status">
-        <div id="liveStatusBadge" class="status-pill idle">
-          <span class="status-dot"></span>
-          <span class="status-text" id="headerStatusText">就绪 · 空闲</span>
-        </div>
-      </div>
-
-      <!-- 侧边导航 Tab -->
-      <nav class="sidebar-nav">
-        <button class="nav-item active" data-tab="home">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-          <span>构建主页</span>
-          <span class="nav-tag" id="sidebarQueueCount">0</span>
-        </button>
-
-        <button class="nav-item" data-tab="check">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-          <span>环境编译检测</span>
-        </button>
-
-        <button class="nav-item" data-tab="vcs">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>
-          <span>版本管理</span>
-        </button>
-
-        <button class="nav-item" data-tab="profiles">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
-          <span>构建节点与分组</span>
-        </button>
-
-        <button class="nav-item" data-tab="settings">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-          <span>引擎与高级配置</span>
-        </button>
-
-        <button class="nav-item" data-tab="help">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-          <span>帮助与说明</span>
-        </button>
-      </nav>
-
-      <div class="sidebar-footer">
-        <button id="btnOpenOutBase" class="btn btn-ghost btn-sidebar-action" title="在资源管理器中打开 Builds 目录">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-          <span>打开输出目录</span>
-        </button>
-      </div>
-    </aside>
-
+    <header class="desktop-toolbar">
+      <div class="desktop-brand">TBuildTool <span>构建控制台</span></div>
+      <div id="liveStatusBadge" class="status-pill idle"><span class="status-dot"></span><span id="headerStatusText">就绪 · 空闲</span></div>
+      <button id="btnOpenSettings" class="btn btn-ghost">⚙ 设置</button>
+    </header>
     <!-- ═════════ 主内容区 Main Content ═════════ -->
     <main class="main-content">
       
       <!-- ────────────────── Tab 1: 构建主页 ────────────────── -->
       <div id="tab-pane-home" class="tab-pane active">
+        <div class="user-website-bar">
+          <span>用户网页</span><a id="userWebsiteLink" href="/" target="_blank" rel="noopener noreferrer"></a>
+          <button id="btnCopyWebsite" class="btn btn-ghost btn-xs">复制链接</button>
+        </div>
         <!-- 头部操作与概览卡片 -->
         <div class="card glass-card hero-console-card">
           <div class="console-hero-header">
@@ -1040,6 +985,21 @@
     </div>
   </div>
 
+  <div id="settingsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="settings-dialog glass-modal">
+      <div class="modal-header"><h3 id="settingsTitle">设置</h3><button id="btnCloseSettings" class="modal-close" aria-label="关闭设置">&times;</button></div>
+      <nav class="settings-nav" aria-label="设置分类">
+        <button class="nav-item" data-tab="profiles">构建配置</button>
+        <button class="nav-item" data-tab="vcs">仓库管理</button>
+        <button class="nav-item" data-tab="settings">引擎与高级配置</button>
+        <button class="nav-item" data-tab="check">环境检测</button>
+        <button class="nav-item" data-tab="help">帮助</button>
+      </nav>
+      <div id="settingsContent" class="settings-content"></div>
+      <div class="modal-footer"><button id="btnOpenOutBase" class="btn btn-ghost">打开输出目录</button><span class="settings-save-hint">配置修改后自动保存</span><button id="btnSettingsDone" class="btn btn-primary">完成</button></div>
+    </div>
+  </div>
+
   <!-- 4. AI 诊断弹窗 -->
   <div id="aiModal" class="modal-backdrop hidden">
     <div class="modal-dialog glass-modal modal-lg">
@@ -1063,6 +1023,7 @@
   <!-- 全局 Toast 提示容器 -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="/app.js"></script>
+  <script src="/admin/app.js"></script>
 </body>
 </html>
+

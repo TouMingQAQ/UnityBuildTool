@@ -20,8 +20,12 @@ const { spawn, spawnSync } = require('child_process');
 const zlib = require('zlib');
 
 const ROOT = __dirname;
-const PUBLIC = path.join(ROOT, 'public');
-const CONFIG_PATH = path.join(ROOT, 'config.json');
+const PUBLIC = path.join(ROOT, '../apps/user/public');
+const ADMIN_PUBLIC = path.join(ROOT, '../apps/admin/public');
+const crypto = require('crypto');
+const { createUserApi, within } = require('./user-api');
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || crypto.randomBytes(32).toString('hex');
+const CONFIG_PATH = process.env.CONFIG_PATH || path.join(ROOT, 'config.json');
 // ─────────────────────────── 配置 ───────────────────────────
 
 function loadConfig() {
@@ -835,6 +839,7 @@ function broadcast(evt) {
   if (evt.type === 'job-end' && job) job.end = { ok: evt.ok, reason: evt.reason, message: evt.message };
   if (evt.type === 'check-end' && check) check.end = { ok: evt.ok, reason: evt.reason, message: evt.message };
   if (evt.type === 'vcs-end' && vcs) vcs.end = { ok: evt.ok, reason: evt.reason, message: evt.message, summary: evt.summary };
+  userApi.broadcast(evt);
   const data = 'data: ' + JSON.stringify(evt) + '\n\n';
   for (const res of sseClients) { try { res.write(data); } catch { /* 断开 */ } }
 }
@@ -1056,28 +1061,9 @@ async function aiAnalyze(body) {
 }
 
 async function startJob(req) {
-  if (job && (job.state === 'running' || job.state === 'starting')) {
-    if (!job.child || (job.child.killed || job.child.exitCode !== null)) {
-      console.warn('[job] 检测到残留状态，自动重置任务状态');
-      job.state = 'done';
-    } else {
-      return { ok: false, error: '已有打包任务正在运行中，请先等待或点击「终止构建」' };
-    }
-  }
-  if (check && (check.state === 'running' || check.state === 'starting')) {
-    if (!check.child || (check.child.killed || check.child.exitCode !== null)) {
-      check.state = 'done';
-    } else {
-      return { ok: false, error: '环境编译检测进行中，请先停止检测' };
-    }
-  }
-  if (vcs && (vcs.state === 'running' || vcs.state === 'starting')) {
-    if (!vcs.child || (vcs.child.killed || vcs.child.exitCode !== null)) {
-      vcs.state = 'done';
-    } else {
-      return { ok: false, error: '版本管理更新进行中，请先停止更新' };
-    }
-  }
+  if (job && ['running', 'starting'].includes(job.state)) return { ok: false, error: '已有打包任务正在运行中，请先等待或点击「终止构建」' };
+  if (check && ['running', 'starting'].includes(check.state)) return { ok: false, error: '环境编译检测进行中，请先停止检测' };
+  if (vcs && ['running', 'starting'].includes(vcs.state)) return { ok: false, error: '版本管理更新进行中，请先停止更新' };
 
   const projectAbs = resolveProject(req.projectPath);
   if (!isValidProject(projectAbs)) return { ok: false, error: '项目路径无效: ' + req.projectPath };
@@ -2061,21 +2047,65 @@ function sendJson(res, code, data) {
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
+const userApi = createUserApi({
+  config: () => config, job: () => job,
+  busy: () => [job, check, vcs].some(task => task && ['starting', 'running'].includes(task.state)),
+  outBase: resolveOutBase, project: () => resolveProject(config.projectPath),
+  start: startJob, stop: stopJob, json: sendJson, readBody,
+});
+function authorized(req) {
+  const cookie = (req.headers.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith('tbuild_admin='));
+  const token = req.headers['x-admin-token'] || (cookie ? cookie.slice('tbuild_admin='.length) : '');
+  const expected = Buffer.from(ADMIN_TOKEN);
+  const actual = Buffer.from(String(token));
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const p = u.pathname;
 
+    if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) { sendJson(res, 403, { error: '不允许跨站提交操作' }); return; }
+    if (p.startsWith('/api/user/')) {
+      if (!(await userApi.handle(req, res, u))) sendJson(res, 404, { error: 'not found' });
+      return;
+    }
+
+    if (p === '/admin' || p.startsWith('/admin/')) {
+      const entry = (p === '/admin' || p === '/admin/') && u.searchParams.get('token') === ADMIN_TOKEN;
+      if (entry) {
+        res.writeHead(303, { Location: '/admin/', 'Set-Cookie': `tbuild_admin=${ADMIN_TOKEN}; HttpOnly; SameSite=Strict; Path=/`, 'Referrer-Policy': 'no-referrer' });
+        res.end(); return;
+      }
+      if (!authorized(req)) { res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('admin authorization required'); return; }
+      const adminPath = (p === '/admin' || p === '/admin/') ? '/index.html' : p.slice('/admin'.length);
+      const file = path.normalize(path.join(ADMIN_PUBLIC, adminPath));
+      if (!within(ADMIN_PUBLIC, file) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { sendJson(res, 404, { error: 'not found' }); return; }
+      const headers = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' };
+      if (p === '/admin' || p === '/admin/') headers['Set-Cookie'] = `tbuild_admin=${ADMIN_TOKEN}; HttpOnly; SameSite=Strict; Path=/`;
+      res.writeHead(200, headers); fs.createReadStream(file).pipe(res); return;
+    }
+
+    if (req.method === 'GET' && p === '/workspace') {
+      const file = path.join(PUBLIC, 'workspace.html');
+      if (!fs.existsSync(file)) { sendJson(res, 404, { error: 'not found' }); return; }
+      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' }); fs.createReadStream(file).pipe(res); return;
+    }
+
     if (req.method === 'GET' && (p === '/' || !p.startsWith('/api/'))) {
       const target = p === '/' ? '/index.html' : p;
       const file = path.normalize(path.join(PUBLIC, target));
-      if (!file.startsWith(PUBLIC)) { sendJson(res, 403, { error: 'forbidden' }); return; }
+      if (!within(PUBLIC, file)) { sendJson(res, 403, { error: 'forbidden' }); return; }
       if (!fs.existsSync(file) || !fs.statSync(file).isFile()) { sendJson(res, 404, { error: 'not found' }); return; }
       res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
       fs.createReadStream(file).pipe(res);
       return;
     }
 
+    // Management APIs are never available to the unauthenticated user website.
+    if (!authorized(req)) { sendJson(res, 401, { error: '管理接口需要管理端授权' }); return; }
+    if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) { sendJson(res, 403, { error: '不允许跨站修改管理配置' }); return; }
     // ── API ──
     if (req.method === 'GET' && p === '/api/status') {
       sendJson(res, 200, {
@@ -2449,6 +2479,8 @@ if (require.main === module) {
     console.log(`  地址: http://${HOST}:${PORT}`);
     console.log('  关闭窗口即停止服务');
     console.log('====================================================');
+    console.log(`TBUILDTOOL_READY=${JSON.stringify({ url: `http://${HOST}:${PORT}` })}`);
+    if (!process.env.ADMIN_TOKEN) console.log(`  管理端: http://${HOST}:${PORT}/admin/?token=${ADMIN_TOKEN}`);
     if (AUTO_OPEN) {
       setTimeout(() => {
         try {

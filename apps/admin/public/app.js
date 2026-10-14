@@ -3,6 +3,15 @@
  * TBuildTool · MiSide 壁纸 本地批量打包工具 —— 前端交互逻辑
  */
 
+// Keep the bootstrap token in memory only. Static assets and EventSource use the
+// HttpOnly session cookie established by GET /admin/?token=... on the backend.
+const bootstrapUrl = new URL(window.location.href);
+const adminToken = window.__TBUILDTOOL_ADMIN_TOKEN || bootstrapUrl.searchParams.get('token') || '';
+if (adminToken) {
+  bootstrapUrl.searchParams.delete('token');
+  history.replaceState(null, '', bootstrapUrl.pathname + bootstrapUrl.search + bootstrapUrl.hash);
+}
+
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -51,13 +60,24 @@ const state = {
 /* ─────────────── 标签页切换 Tab Navigation ─────────────── */
 
 function switchTab(tabId) {
+  if (tabId === 'home') {
+    closeSettings();
+    return;
+  }
   state.currentTab = tabId;
-  document.querySelectorAll('.sidebar-nav .nav-item').forEach(b => {
+  $('settingsModal').classList.remove('hidden');
+  document.querySelectorAll('.settings-nav .nav-item').forEach(b => {
     b.classList.toggle('active', b.dataset.tab === tabId);
   });
-  document.querySelectorAll('.tab-pane').forEach(p => {
+  document.querySelectorAll('#settingsContent > .tab-pane').forEach(p => {
     p.classList.toggle('active', p.id === `tab-pane-${tabId}`);
   });
+}
+
+function closeSettings() {
+  $('settingsModal').classList.add('hidden');
+  state.currentTab = 'home';
+  $('btnOpenSettings').focus();
 }
 
 /* ─────────────── Toast 提示通知 ─────────────── */
@@ -103,10 +123,10 @@ async function copyToClipboard(text, successMsg = '已复制到剪贴板') {
 /* ─────────────── 通用 API 请求 ─────────────── */
 
 async function api(path, body) {
-  const opt = { method: 'GET' };
+  const opt = { method: 'GET', credentials: 'same-origin', headers: { 'X-Admin-Token': adminToken } };
   if (body !== undefined) {
     opt.method = 'POST';
-    opt.headers = { 'Content-Type': 'application/json' };
+    opt.headers['Content-Type'] = 'application/json';
     opt.body = JSON.stringify(body);
   }
   const r = await fetch(path, opt);
@@ -1683,7 +1703,7 @@ function handleSSE(d) {
   if (d.type === 'vcs-node-end') {
     const st = state.vcsNodeStates[d.nodeId] || (state.vcsNodeStates[d.nodeId] = {});
     st.status = ['ok', 'partial', 'fail', 'skipped', 'cancelled'].includes(d.status) ? d.status : (d.ok ? 'ok' : 'fail');
-    st.type = d.type || st.type;
+    st.type = d.vcsType || d.type || st.type;
     st.message = d.message || '';
     renderVcs();
     return;
@@ -1695,6 +1715,8 @@ function handleSSE(d) {
   }
 
   if (d.type === 'hello') {
+    if (d.check) handleSSE({ type: 'check-hello', check: d.check });
+    if (d.vcs) handleSSE({ type: 'vcs-hello', vcs: d.vcs });
     if (d.job) {
       state.job = d.job;
       state.jobProgress = d.job.progress || {};
@@ -2490,8 +2512,35 @@ async function init() {
   // 0. 立即建立 SSE 连接：无论后续任何初始化是否失败，日志/进度都通过 SSE 实时推送
   initSSE();
 
-  // 1. 侧边导航切换
-  document.querySelectorAll('.sidebar-nav .nav-item').forEach(b => {
+  // Keep every configuration panel inside one settings dialog.
+  for (const tab of ['profiles', 'vcs', 'settings', 'check', 'help']) {
+    $('settingsContent').appendChild($(`tab-pane-${tab}`));
+  }
+  const website = new URL('/', location.origin).href;
+  $('userWebsiteLink').href = website;
+  $('userWebsiteLink').textContent = website;
+  $('userWebsiteLink').onclick = async e => {
+    e.preventDefault();
+    try { await api('/api/open-user-page', { url: website }); }
+    catch (error) { showToast(`打开网页失败：${error.message}`, 'error'); }
+  };
+  $('btnCopyWebsite').onclick = () => copyToClipboard(website, '用户网页链接已复制');
+  $('btnOpenSettings').onclick = () => { switchTab('profiles'); $('btnCloseSettings').focus(); };
+  $('btnCloseSettings').onclick = closeSettings;
+  $('btnSettingsDone').onclick = closeSettings;
+  $('settingsModal').addEventListener('click', e => { if (e.target === $('settingsModal')) closeSettings(); });
+  document.addEventListener('keydown', e => {
+    if ($('settingsModal').classList.contains('hidden')) return;
+    if (['profileCfgModal', 'vcsNodeModal', 'previewModal', 'aiModal'].some(id => !$(id).classList.contains('hidden'))) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeSettings(); }
+    if (e.key === 'Tab') {
+      const focusable = [...$('settingsModal').querySelectorAll('button, input, select, textarea, a[href]')].filter(el => !el.disabled && el.getClientRects().length);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  document.querySelectorAll('.settings-nav .nav-item').forEach(b => {
     b.onclick = () => switchTab(b.dataset.tab);
   });
 

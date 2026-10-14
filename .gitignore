@@ -27,6 +27,7 @@ builds/
 # Node
 # ===========================
 node_modules/
+apps/admin/src-tauri/target/
 
 # ===========================
 # IDE / 编辑器 / OS

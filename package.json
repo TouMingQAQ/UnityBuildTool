@@ -1,0 +1,18 @@
+{
+  "name": "tbuildtool",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/admin.js dev",
+    "dev:server": "node scripts/admin.js dev",
+    "legacy:server": "node web/server.js",
+    "dev:admin": "node scripts/admin.js dev",
+    "app:dev": "node scripts/admin.js dev",
+    "build:admin": "node scripts/admin.js build",
+    "test:rust": "node scripts/admin.js test",
+    "test": "node scripts/admin.js test",
+    "test:legacy": "node --test web/test/*.test.js",
+    "check:rust": "node scripts/admin.js check",
+    "check": "node --check web/server.js && node --check web/user-api.js && node --check apps/admin/public/app.js && node --check apps/user/public/user.js"
+  }
+}

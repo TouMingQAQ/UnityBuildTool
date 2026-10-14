@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#090d19" />
+    <title>构建工作台 · TBuildTool</title>
+    <link rel="stylesheet" href="/user.css" />
+    <script src="/user.js" defer></script>
+  </head>
+  <body class="workspace" data-page="workspace">
+    <div class="workspace-glow" aria-hidden="true"></div>
+    <header class="site-header">
+      <a class="brand" href="/"
+        ><span class="brand-icon">T</span>TBuildTool<span class="brand-tag"
+          >BUILD STUDIO</span
+        ></a
+      >
+      <div class="connection">
+        <span id="connection-dot" class="status-dot"></span
+        ><span id="connection-label">连接中</span>
+      </div>
+    </header>
+    <main class="workspace-main">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">YOUR BUILD, YOUR CONTROL</div>
+          <h1>构建工作台<span class="heading-dot">.</span></h1>
+          <p>选择目标，见证想法成为下一次发布。</p>
+        </div>
+        <span class="pill">无需登录 · 随时出发</span>
+      </div>
+      <div id="notice" class="notice" role="alert" hidden></div>
+      <div class="workspace-grid">
+        <section
+          class="panel selection-panel"
+          aria-labelledby="selection-title"
+        >
+          <div class="panel-heading">
+            <div>
+              <span class="section-index">01</span>
+              <h2 id="selection-title">选择构建目标</h2>
+            </div>
+            <button id="catalog-refresh" class="icon-button" type="button">
+              刷新
+            </button>
+          </div>
+          <div id="groups" class="group-list"></div>
+          <div class="selection-actions">
+            <span id="selected-count">已选 0 个目标</span
+            ><button id="select-all" class="text-button" type="button">
+              全选
+            </button>
+          </div>
+          <div id="catalog" class="catalog">
+            <p class="empty-state">正在加载构建配置…</p>
+          </div>
+          <div class="build-action">
+            <button id="build" class="button primary" type="button" disabled>
+              开始构建 <span aria-hidden="true">↗</span>
+            </button>
+            <p>按选中顺序依次构建，运行期间请勿重复提交。</p>
+          </div>
+        </section>
+        <section class="panel monitor-panel" aria-labelledby="monitor-title">
+          <div class="panel-heading">
+            <div>
+              <span class="section-index">02</span>
+              <h2 id="monitor-title">构建进行时</h2>
+            </div>
+            <span id="job-state" class="pill">待命</span>
+          </div>
+          <div class="progress-summary">
+            <div class="progress-heading">
+              <span id="job-title">准备好，开启一次新构建</span
+              ><strong id="job-percent">—</strong>
+            </div>
+            <div class="progress-track"><div id="progress-bar"></div></div>
+            <div class="progress-meta">
+              <span id="job-stage">选择左侧目标后开始</span
+              ><button
+                id="stop"
+                class="text-button danger"
+                type="button"
+                hidden
+              >
+                停止构建
+              </button>
+            </div>
+          </div>
+          <div id="queue" class="queue"></div>
+          <div class="log-heading">
+            <span>构建动态</span
+            ><button id="clear-log" class="text-button" type="button">
+              清空显示
+            </button>
+          </div>
+          <p class="download-hint">
+            这里显示构建生命周期动态；详细日志请由管理员在管理端查看。
+          </p>
+          <pre
+            id="logs"
+            class="logs"
+            tabindex="0"
+            aria-label="构建生命周期动态"
+          >
+等待构建任务…</pre>
+          <div id="job-result" class="job-result" role="status" hidden></div>
+        </section>
+      </div>
+      <section class="panel files-panel" aria-labelledby="files-title">
+        <div class="panel-heading">
+          <div>
+            <span class="section-index">03</span>
+            <h2 id="files-title">构建产物</h2>
+          </div>
+          <button id="files-refresh" class="icon-button" type="button">
+            刷新
+          </button>
+        </div>
+        <div class="files-toolbar">
+          <label class="root-control"
+            >产物目录<select id="root-select" aria-label="选择产物根目录">
+              <option value="">加载中…</option>
+            </select></label
+          >
+          <div class="file-actions">
+            <button
+              id="parent"
+              class="button secondary small"
+              type="button"
+              disabled
+            >
+              ↑ 返回上级</button
+            ><button
+              id="download"
+              class="button secondary small"
+              type="button"
+              disabled
+            >
+              下载所选 <span id="file-selected-count">(0)</span>
+            </button>
+          </div>
+        </div>
+        <nav
+          id="breadcrumbs"
+          class="breadcrumbs"
+          aria-label="文件目录导航"
+        ></nav>
+        <p class="download-hint">
+          文件直接下载，文件夹以 ZIP
+          下载；多选会逐个启动下载，浏览器可能需要允许多文件下载。
+        </p>
+        <div class="file-table-wrap">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th class="check-column">
+                  <input
+                    id="file-select-all"
+                    type="checkbox"
+                    aria-label="选择当前目录全部文件"
+                  />
+                </th>
+                <th>名称</th>
+                <th>大小</th>
+                <th>更新时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="files">
+              <tr>
+                <td colspan="5" class="empty-state">正在加载产物目录…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p id="file-status" class="file-status" role="status"></p>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <span>TBuildTool / 为每一次发布而生</span><a href="/">返回首页 ↗</a>
+    </footer>
+  </body>
+</html>
