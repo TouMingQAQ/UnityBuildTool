@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>管理端 · TBuildTool</title>
+  <title>管理端 · UnityBuildTool</title>
 
 
   <meta name="referrer" content="no-referrer">
@@ -12,7 +12,7 @@
 <body>
   <div class="app-layout">
     <header class="desktop-toolbar">
-      <div class="desktop-brand">TBuildTool <span>构建控制台</span></div>
+      <div class="desktop-brand">UnityBuildTool <span>构建控制台</span></div>
       <div id="liveStatusBadge" class="status-pill idle"><span class="status-dot"></span><span id="headerStatusText">就绪 · 空闲</span></div>
       <button id="btnOpenSettings" class="btn btn-ghost">⚙ 设置</button>
     </header>
@@ -390,7 +390,7 @@
               <div class="field-group full">
                 <label for="projectPath" class="field-label">
                   <span>Unity 项目路径</span>
-                  <span class="label-hint">（绝对路径或基于 TBuildTool\web 的相对路径）</span>
+                  <span class="label-hint">（绝对路径或基于 UnityBuildTool\web 的相对路径）</span>
                 </label>
                 <div class="input-action-wrap">
                   <input type="text" id="projectPath" class="input-text" placeholder="例如 D:\UnityProject\Miside 或 ..\..">
@@ -691,7 +691,7 @@
           <div class="card-header">
             <div class="card-title">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
-              <h3>TBuildTool · 使用指南与构建原理</h3>
+              <h3>UnityBuildTool · 使用指南与构建原理</h3>
             </div>
           </div>
           <div class="card-body help-body">
@@ -895,7 +895,7 @@
         <!-- iOS 专属 -->
         <div id="pcIosBox" class="field-grid hidden">
           <div class="modal-hint-box" style="margin-top: 0;">
-            🍎 <strong>iOS 目标特性</strong>：构建输出为完整 Xcode 工程目录。TBuildTool 构建完成后会自动将其压缩为 ZIP 归档，并按上方命名规则重命名。
+            🍎 <strong>iOS 目标特性</strong>：构建输出为完整 Xcode 工程目录。UnityBuildTool 构建完成后会自动将其压缩为 ZIP 归档，并按上方命名规则重命名。
           </div>
         </div>
 
@@ -934,7 +934,7 @@
           <div class="field-group full">
             <label for="vcsNodePath" class="field-label">
               <span>本地路径</span>
-              <span class="label-hint">（绝对路径，或基于 TBuildTool\web 的相对路径；默认留空）</span>
+              <span class="label-hint">（绝对路径，或基于 UnityBuildTool\web 的相对路径；默认留空）</span>
             </label>
             <div class="input-action-wrap">
               <input type="text" id="vcsNodePath" class="input-text" placeholder="例如 D:\UnityProject\Miside 或 ..\..">

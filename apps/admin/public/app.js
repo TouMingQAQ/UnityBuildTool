@@ -1,6 +1,6 @@
 'use strict';
 /**
- * TBuildTool · MiSide 壁纸 本地批量打包工具 —— 前端交互逻辑
+ * UnityBuildTool · MiSide 壁纸 本地批量打包工具 —— 前端交互逻辑
  */
 
 // Keep the bootstrap token in memory only. Static assets and EventSource use the

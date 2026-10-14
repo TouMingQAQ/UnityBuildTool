@@ -1,4 +1,4 @@
-# TBuildTool · Unity 构建平台
+# UnityBuildTool · Unity 构建平台
 
 项目由 **Tauri/Rust 本地后端**、**Tauri 管理端网页**和**用户网页前端**组成。用户网页保留原来的主页与工作台；配置、仓库、Unity、构建调度、状态和文件下载由 Tauri 内部的 Rust 服务处理。
 
@@ -26,7 +26,7 @@ npm run app:dev
 npm run build:admin
 ```
 
-安装包位于 `apps/admin/src-tauri/target/release/bundle/nsis/`。配置保存至系统应用数据目录 `com.tbuildtool.admin/config.json`，开发模式读取 `web/config.json`。
+安装包位于 `apps/admin/src-tauri/target/release/bundle/nsis/`。配置保存至系统应用数据目录 `com.unitybuildtool.admin/config.json`，开发模式读取 `web/config.json`。
 
 ## 用户端
 

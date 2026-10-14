@@ -96,7 +96,7 @@ fn main() {
             let menu = Menu::with_items(app, &[&toggle, &website, &quit])?;
             TrayIconBuilder::new()
                 .icon(tray_image())
-                .tooltip("TBuildTool 管理端")
+                .tooltip("UnityBuildTool 管理端")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {

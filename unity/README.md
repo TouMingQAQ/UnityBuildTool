@@ -1,6 +1,6 @@
-# TBuildTool · 工程内辅助插件（Unity Editor）
+# UnityBuildTool · 工程内辅助插件（Unity Editor）
 
-本目录是 TBuildTool 的**工程内辅助插件**：安装进 Unity 项目 `Assets/` 后在编辑器侧生效，
+本目录是 UnityBuildTool 的**工程内辅助插件**：安装进 Unity 项目 `Assets/` 后在编辑器侧生效，
 提供命令行打包入口与统一的构建进度钩子（`IBuildProgress`）机制。
 
 ## 内容
@@ -33,25 +33,25 @@ Assembly-CSharp-Editor、*.Editor）以及本插件程序集中实现了 `IBuild
 单个钩子抛异常不影响其他钩子（记录 Warning 后继续）。
 
 > ⚠ 行为变更：构建进度钩子不再通过 Unity 全局构建回调（IPreprocessBuildWithReport /
-> IPostprocessBuildWithReport）自动生效，改为由 TBuildTool 打包时经 `IBuildProgress` 驱动——
-> **编辑器内手动构建不会执行钩子，请一律通过 TBuildTool 打包**。
+> IPostprocessBuildWithReport）自动生效，改为由 UnityBuildTool 打包时经 `IBuildProgress` 驱动——
+> **编辑器内手动构建不会执行钩子，请一律通过 UnityBuildTool 打包**。
 
 ## 安装方式
 
-任选其一（只装到某个 Unity 项目时推荐 1；随 TBuildTool 目录分发时推荐 2）：
+任选其一（只装到某个 Unity 项目时推荐 1；随 UnityBuildTool 目录分发时推荐 2）：
 
 ### 1. 目录联接（Windows，推荐，单份源码）
 
-把 `TBuildTool/unity` 以**目录联接**挂到项目 `Assets/TBuildTool`：
+把 `UnityBuildTool/unity` 以**目录联接**挂到项目 `Assets/UnityBuildTool`：
 
 ```bat
-mklink /J "D:\UnityProject\Miside\Assets\TBuildTool" "D:\UnityProject\Miside\TBuildTool\unity"
+mklink /J "D:\UnityProject\Miside\Assets\UnityBuildTool" "D:\UnityProject\Miside\UnityBuildTool\unity"
 ```
 
 或 PowerShell：
 
 ```powershell
-New-Item -ItemType Junction -Path "D:\UnityProject\Miside\Assets\TBuildTool" -Target "D:\UnityProject\Miside\TBuildTool\unity"
+New-Item -ItemType Junction -Path "D:\UnityProject\Miside\Assets\UnityBuildTool" -Target "D:\UnityProject\Miside\UnityBuildTool\unity"
 ```
 
 > 注意：目录联接不会进 git。新克隆仓库后需重新执行一次上述命令。
@@ -60,12 +60,12 @@ New-Item -ItemType Junction -Path "D:\UnityProject\Miside\Assets\TBuildTool" -Ta
 ### 2. 拷贝安装（跨机器 / 无联接权限）
 
 将 `Editor/` 文件夹（BuildCommand.cs / CompileCheck.cs / BuildProgress.cs）
-拷贝到项目 `Assets/TBuildTool/Editor/`。
+拷贝到项目 `Assets/UnityBuildTool/Editor/`。
 
 ### 3. UPM 包引用（可选）
 
 在项目 `Packages/manifest.json` 增加：
-`"com.tbuildtool": "file:../../TBuildTool/unity"`。
+`"com.unitybuildtool": "file:../../UnityBuildTool/unity"`。
 （包内未携带 asmdef，自动生成程序集即可编译；若你项目有特殊程序集约束请自行调整。）
 
 ## 命令行用法（外部工具 / CI 调用）
@@ -100,9 +100,9 @@ Unity.exe -batchmode -nographics \
 
 ## 迁移说明（原 MisideWallpaper.Editor）
 
-| 原（BuildWeb 时代） | 现（TBuildTool） |
+| 原（BuildWeb 时代） | 现（UnityBuildTool） |
 |---|---|
 | `MisideWallpaper.Editor.WallpaperBuildCommand.Build` | `TBuildTool.Editor.BuildCommand.Build` |
-| `Tools/MisideWallpaper/...` 菜单 | `Tools/TBuildTool/...` 菜单 |
-| `Assets/MisideWallpaper/Editor/` | `TBuildTool/unity/Editor/`（经 `Assets/TBuildTool` 联接） |
+| `Tools/MisideWallpaper/...` 菜单 | `Tools/UnityBuildTool/...` 菜单 |
+| `Assets/MisideWallpaper/Editor/` | `UnityBuildTool/unity/Editor/`（经 `Assets/UnityBuildTool` 联接） |
 | `IPreprocessBuildWithReport / IPostprocessBuildWithReport` 自动回调 | `IBuildProgress` 钩子（BuildCommand 驱动） |

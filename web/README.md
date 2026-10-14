@@ -1,14 +1,14 @@
-# TBuildTool · 共享构建服务
+# UnityBuildTool · 共享构建服务
 
 > 当前运行后端已迁移至 Tauri/Rust，启动方式和两端职责见 [项目说明](<../README.md>)。本目录中的 Node 实现保留为迁移参考和旧版回归测试，不再由桌面程序启动。下方为原构建功能参考，界面操作在管理端进行。
 
-TBuildTool 的**外部打包工具**部分：通过网页界面批量打包 Unity 项目
+UnityBuildTool 的**外部打包工具**部分：通过网页界面批量打包 Unity 项目
 （Unity 6，仅 Win / Android），底层调用命令行完成构建：
 每个 Profile 依次执行 `Unity.exe -batchmode -executeMethod`（或自定义 CLI 命令模板），
 日志通过 SSE 实时推送到网页。
 
-> 本工具调用工程内辅助插件（`TBuildTool/unity`）的打包入口
-> `TBuildTool.Editor.BuildCommand.Build`；两者配套使用，详见 `TBuildTool/README.md`。
+> 本工具调用工程内辅助插件（`UnityBuildTool/unity`）的打包入口
+> `TBuildTool.Editor.BuildCommand.Build`；两者配套使用，详见 `UnityBuildTool/README.md`。
 
 ## 输出与产物归档（v2）
 
@@ -34,7 +34,7 @@ TBuildTool 的**外部打包工具**部分：通过网页界面批量打包 Unit
 2. 在项目根目录执行 `npm run legacy:server`。
 3. 浏览器打开 http://127.0.0.1:8787 （旧服务默认端口）。
 4. 在页面中：
-   - ① 填写 Unity 项目路径（支持绝对路径；相对路径以**本工具目录 TBuildTool\web** 为基准，`..\..` 即本项目根目录），点击「扫描 Profile」；
+   - ① 填写 Unity 项目路径（支持绝对路径；相对路径以**本工具目录 UnityBuildTool\web** 为基准，`..\..` 即本项目根目录），点击「扫描 Profile」；
    - ② 把扫描出的 Profile 逐个「添加」进队列，用 ↑↓ 排定打包顺序（仅显示 Win / Android 目标，其余目标自动忽略）；
    - ③ 选择打包引擎：
      - **Unity 批处理模式（默认）**：确认 Unity.exe 路径（可「自动探测」或「用 unity CLI 探测」）；
@@ -141,18 +141,18 @@ Build Target 5 / 19 / 13 / 9 / 4）逐条执行一次真实编译检测。
 
 ## 依赖的工程内辅助插件
 
-- `TBuildTool/unity/Editor/BuildCommand.cs`（安装于项目 `Assets/TBuildTool/Editor/`）
+- `UnityBuildTool/unity/Editor/BuildCommand.cs`（安装于项目 `Assets/UnityBuildTool/Editor/`）
   批处理打包入口：按项目相对路径加载 Build Profile → `profile.BuildPlayer(...)`，
   成功退出码 0 / 失败 1；安卓构建时注入 keystore 密码。不会修改全局 `EditorBuildSettings`，
   场景列表完全由 Build Profile 提供（符合壁纸项目约束）。
-- `TBuildTool/unity/Editor/CompileCheck.cs`
+- `UnityBuildTool/unity/Editor/CompileCheck.cs`
   环境编译检测入口：单环境线切换目标 + 触发脚本编译并检查错误，结果写入 JSON，
-  退出码 0/1/2（详见 `TBuildTool/unity/README.md`；注意调用时**不要传 `-quit`**）。
+  退出码 0/1/2（详见 `UnityBuildTool/unity/README.md`；注意调用时**不要传 `-quit`**）。
 
 ## 目录结构
 
 ```
-TBuildTool/web/
+UnityBuildTool/web/
   server.js        # 零依赖 Node 后端（HTTP + SSE + 命令执行）
   config.json      # 运行后自动生成，保存界面配置（不含密码）
   public/          # 前端（index.html / app.js / style.css，无构建、无 CDN）
@@ -174,4 +174,4 @@ TBuildTool/web/
 - **unity CLI 报 EPERM 锁文件错误**：CLI 需要写 `%APPDATA%\UnityHub`，确认该目录可写即可
   （正常桌面环境无此问题，仅部分受限环境会出现）。
 - **找不到 `TBuildTool.Editor.BuildCommand.Build`**：确认工程内辅助插件已安装
-  （`Assets/TBuildTool/Editor/` 下的 .cs 文件齐全，见 `TBuildTool/unity/README.md`）。
+  （`Assets/UnityBuildTool/Editor/` 下的 .cs 文件齐全，见 `UnityBuildTool/unity/README.md`）。

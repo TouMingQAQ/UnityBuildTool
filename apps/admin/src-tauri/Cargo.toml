@@ -1,8 +1,8 @@
 [package]
-name = "tbuildtool-admin"
-version = "0.1.0"
-description = "TBuildTool 管理端"
-authors = ["TBuildTool"]
+name = "unitybuildtool-admin"
+version = "0.0.1"
+description = "UnityBuildTool 管理端"
+authors = ["UnityBuildTool"]
 edition = "2021"
 
 [build-dependencies]

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "管理端",
-  "version": "0.1.0",
-  "identifier": "com.tbuildtool.admin",
+  "productName": "UnityBuildTool",
+  "version": "0.0.1",
+  "identifier": "com.unitybuildtool.admin",
   "build": { "frontendDist": "../public" },
   "app": {
     "windows": [],

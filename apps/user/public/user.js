@@ -17,7 +17,7 @@
     document.querySelectorAll("[data-project-name]").forEach((el) => {
       el.textContent = name;
     });
-    document.title = `${name} · ${document.body.dataset.page === "workspace" ? "构建工作台" : "构建首页"} · TBuildTool`;
+    document.title = `${name} · ${document.body.dataset.page === "workspace" ? "构建工作台" : "构建首页"} · UnityBuildTool`;
   }
   function projectError(message) {
     notice(message);
