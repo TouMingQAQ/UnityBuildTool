@@ -36,6 +36,8 @@ fn start_service(
     } else {
         config.parent().unwrap().to_path_buf()
     };
+    // Service reads the persisted server.host/server.port; defaults to 127.0.0.1:50345.
+    // A bind conflict fails startup instead of silently changing shared project links.
     Service::start(config, runtime_root, token.to_owned())
 }
 

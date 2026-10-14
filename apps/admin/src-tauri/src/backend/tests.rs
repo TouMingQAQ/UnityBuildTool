@@ -3,7 +3,8 @@ use super::*;
 fn public_catalog_and_status_hide_secrets() {
     let t = tempfile::tempdir().unwrap();
     let b = Backend::new(t.path().join("config.json"), t.path().to_path_buf());
-    b.save(json!({"projectPath":"private/project","buildNodes":[{"id":"one","name":"公开名字","profileAssetPath":"Assets/private.asset","target":13,"keystorePass":"SECRET"}],"buildGroups":[{"id":"g","name":"组","nodeIds":["one","missing"]}]})).unwrap();
+    b.handle_admin_project("POST","/api/config",json!({"projectPath":"private/project","buildNodes":[{"id":"one","name":"公开名字","profileAssetPath":"Assets/private.asset","target":13,"keystorePass":"SECRET"}],"buildGroups":[{"id":"g","name":"组","nodeIds":["one","missing"]}]}),"default").unwrap();
+    let b = b.project_runtime("default").unwrap();
     let c = b.handle("GET", "/api/user/catalog", json!({})).unwrap();
     let s = c.to_string();
     assert!(!s.contains("SECRET"));
@@ -34,14 +35,20 @@ fn public_catalog_and_status_hide_secrets() {
 fn task_acquisition_is_exclusive() {
     let t = tempfile::tempdir().unwrap();
     let b = Backend::new(t.path().join("c"), t.path().into());
+    let id = b.config()["projects"][0]["id"].as_str().unwrap().to_owned();
+    let project = b.project_runtime(&id).unwrap();
     b.acquire().unwrap();
     assert_eq!(b.acquire().unwrap_err().0, 409);
-    b.stop();
-    assert!(b.cancelled());
     b.release();
-    b.acquire().unwrap();
-    assert!(!b.cancelled());
-    b.release();
+    project.reserve_build().unwrap();
+    let queued = project.scheduler.state.lock().unwrap().1.len();
+    assert_eq!(queued, 1);
+    project.stop();
+    assert!(!project.wait_turn());
+    project.release();
+    project.reserve_build().unwrap();
+    assert!(project.wait_turn());
+    project.release();
 }
 #[test]
 fn process_failure_and_timeout_are_real() {

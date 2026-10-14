@@ -21,7 +21,11 @@
       
       <!-- ────────────────── Tab 1: 构建主页 ────────────────── -->
       <div id="tab-pane-home" class="tab-pane active">
+        <section class="monitor-overview"><h2>后台项目状态</h2><div id="monitorHost" class="monitor-host">正在采集后台状态…</div><div id="monitorCards" class="monitor-cards"></div></section>
+        <section id="monitorDetail" class="card glass-card hidden" aria-live="polite"></section>
+        <div hidden aria-hidden="true">
         <div class="user-website-bar">
+          <label for="adminProjectSelect">项目</label><select id="adminProjectSelect" class="input-select"></select>
           <span>用户网页</span><a id="userWebsiteLink" href="/" target="_blank" rel="noopener noreferrer"></a>
           <button id="btnCopyWebsite" class="btn btn-ghost btn-xs">复制链接</button>
         </div>
@@ -58,6 +62,7 @@
             </div>
           </div>
 
+          <div id="globalQueueSummary" class="job-summary-line" aria-live="polite"></div>
           <div id="jobSummary" class="job-summary-line"></div>
           <div id="jobBanner" class="banner hidden"></div>
 
@@ -138,6 +143,7 @@
             </div>
             <pre id="logView" class="terminal-body">— 尚未开始构建 —</pre>
           </div>
+        </div>
         </div>
       </div>
 
@@ -988,14 +994,40 @@
   <div id="settingsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <div class="settings-dialog glass-modal">
       <div class="modal-header"><h3 id="settingsTitle">设置</h3><button id="btnCloseSettings" class="modal-close" aria-label="关闭设置">&times;</button></div>
+      <div class="settings-layout">
+        <aside class="settings-project-sidebar" aria-label="项目切换">
+          <div class="settings-sidebar-title">项目</div>
+          <div id="adminProjectList" class="project-tabs" role="tablist" aria-label="项目" aria-orientation="vertical"></div>
+          <button id="btnAddProject" class="btn btn-ghost btn-sm">＋ 新建项目</button>
+        </aside>
+        <div class="settings-project-main">
+          <div class="settings-project-context"><span id="settingsProjectHint">请选择项目</span></div>
       <nav class="settings-nav" aria-label="设置分类">
+        <button class="nav-item" data-tab="projects">项目管理</button>
         <button class="nav-item" data-tab="profiles">构建配置</button>
         <button class="nav-item" data-tab="vcs">仓库管理</button>
         <button class="nav-item" data-tab="settings">引擎与高级配置</button>
         <button class="nav-item" data-tab="check">环境检测</button>
         <button class="nav-item" data-tab="help">帮助</button>
       </nav>
-      <div id="settingsContent" class="settings-content"></div>
+      <div id="settingsContent" class="settings-content">
+        <div id="tab-pane-projects" class="tab-pane">
+          <div class="card glass-card"><div class="card-header"><h3>当前项目信息</h3></div>
+            <div class="card-body"><p class="field-hint">服务端口是全局设置。下面的构建配置、仓库管理、引擎与高级配置、环境检测和 AI 设置，都会保存到左侧选中的当前项目中，项目之间互不共享。</p>
+              <div class="field-row"><div class="field-group"><label for="projectDisplayName">项目名称</label><input id="projectDisplayName" class="input-text" maxlength="100"></div><div class="field-group"><label for="projectSlug">链接标识</label><input id="projectSlug" class="input-text" placeholder="client" maxlength="64"></div></div>
+              <label class="switch-label"><input type="checkbox" id="projectEnabled"><span>启用用户页面和构建</span></label>
+              <p class="field-hint">链接标识使用小写字母、数字和连字符，修改后旧链接将失效。停用项目不会删除工程文件。</p>
+              <div class="field-row"><button id="btnSaveProject" class="btn btn-primary">保存项目信息</button><button id="btnDeleteProject" class="btn btn-danger">删除项目配置</button></div>
+            </div></div>
+          <div class="card glass-card"><div class="card-header"><h3>全局网页服务</h3></div><div class="card-body">
+            <div class="field-row"><div class="field-group"><label for="serverHost">监听地址</label><select id="serverHost" class="input-select"><option value="127.0.0.1">127.0.0.1（仅本机）</option></select></div><div class="field-group"><label for="serverPort">固定端口</label><input id="serverPort" type="number" min="0" max="65535" class="input-text"></div></div>
+            <p class="field-hint">端口 0 使用随机端口。固定端口便于保存项目链接；修改服务设置后需重启应用生效。当前只支持本机监听。</p>
+            <button id="btnSaveServer" class="btn btn-primary">保存服务设置</button>
+          </div></div>
+        </div>
+      </div>
+        </div>
+      </div>
       <div class="modal-footer"><button id="btnOpenOutBase" class="btn btn-ghost">打开输出目录</button><span class="settings-save-hint">配置修改后自动保存</span><button id="btnSettingsDone" class="btn btn-primary">完成</button></div>
     </div>
   </div>
@@ -1024,6 +1056,7 @@
   <div id="toastContainer" class="toast-container"></div>
 
   <script src="/admin/app.js"></script>
+  <script src="/admin/monitor.js"></script>
 </body>
 </html>
 

@@ -1050,6 +1050,22 @@ select {
     max-height: 240px;
   }
 }
+.project-label {
+  color: #9eaafb;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.hero > .notice {
+  position: relative;
+  grid-column: 1 / -1;
+  z-index: 2;
+}
+a[aria-disabled="true"] {
+  opacity: .5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *:before,

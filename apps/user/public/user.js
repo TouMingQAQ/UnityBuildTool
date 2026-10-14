@@ -1,13 +1,50 @@
 "use strict";
 (() => {
-  if (document.body.dataset.page !== "workspace") return;
   const $ = (id) => document.getElementById(id);
+  const route = window.location.pathname.match(/^\/p\/([^/]+)(?:\/workspace)?\/?$/);
+  let slug = "";
+  try { slug = route ? decodeURIComponent(route[1]) : ""; } catch (_) {}
+  const projectHome = slug ? `/p/${encodeURIComponent(slug)}` : "";
+  const apiBase = slug ? `/api/projects/${encodeURIComponent(slug)}` : "";
+  document.querySelectorAll("[data-project-home]").forEach((link) => {
+    link.href = projectHome || "#";
+  });
+  document.querySelectorAll("[data-project-workspace]").forEach((link) => {
+    link.href = projectHome ? `${projectHome}/workspace` : "#";
+  });
+  function setProject(project) {
+    const name = project && (project.name || project.slug) || slug;
+    document.querySelectorAll("[data-project-name]").forEach((el) => {
+      el.textContent = name;
+    });
+    document.title = `${name} · ${document.body.dataset.page === "workspace" ? "构建工作台" : "构建首页"} · TBuildTool`;
+  }
+  function projectError(message) {
+    notice(message);
+    document.querySelectorAll("[data-project-workspace]").forEach((link) => {
+      link.removeAttribute("href");
+      link.setAttribute("aria-disabled", "true");
+    });
+  }
+  if (!slug) {
+    projectError("无效的项目链接，请使用管理员提供的 /p/项目标识 链接访问。");
+    return;
+  }
+  if (document.body.dataset.page !== "workspace") {
+    api(`${apiBase}/catalog`).then((data) => setProject(data.project))
+      .catch((error) => projectError(`项目加载失败：${error.message}`));
+    return;
+  }
   const state = {
     nodes: [],
     groups: [],
     selected: new Set(),
     job: null,
     busy: false,
+    queued: false,
+    queuePosition: null,
+    queueEnabled: true,
+    projectReady: false,
     submitting: false,
     stopping: false,
     connected: false,
@@ -62,12 +99,14 @@
           : {}),
       });
       const data = await response.json().catch(() => null);
-      if (!response.ok)
+      if (!response.ok) {
+        if (response.status === 404) throw new Error("项目不存在或已停用，请联系管理员检查项目链接。");
         throw new Error(
           data && data.error
             ? String(data.error)
             : `请求失败（${response.status}）`,
         );
+      }
       if (data === null) throw new Error("服务器返回了无法读取的数据");
       return data;
     } catch (error) {
@@ -84,17 +123,23 @@
       !state.job.end
     );
   }
+  function canSubmit() {
+    return state.projectReady && !state.queued &&
+      !hasActiveBuild() && (!state.busy || state.queueEnabled);
+  }
   function renderSelection() {
-    const blocked = state.busy || state.submitting || state.catalogLoading;
+    const blocked = !canSubmit() || state.submitting || state.catalogLoading;
     $("selected-count").textContent = `已选 ${state.selected.size} 个目标`;
     $("build").disabled = blocked || !state.statusKnown || !state.selected.size;
     $("build").textContent = state.submitting
       ? "正在提交…"
-      : state.busy
-        ? hasActiveBuild()
-          ? "构建正在运行"
-          : "管理员任务运行中"
-        : "开始构建 ↗";
+      : state.queued
+        ? "任务已排队"
+        : state.busy
+          ? hasActiveBuild()
+            ? "构建正在运行"
+            : state.queueEnabled ? "加入构建队列 ↗" : "其他任务运行中"
+          : "开始构建 ↗";
     $("select-all").disabled = blocked || !state.nodes.length;
     $("select-all").textContent =
       state.nodes.length && state.selected.size === state.nodes.length
@@ -172,7 +217,9 @@
     state.catalogLoading = true;
     renderSelection();
     try {
-      const data = await api("/api/user/catalog");
+      const data = await api(`${apiBase}/catalog`);
+      state.projectReady = true;
+      setProject(data.project);
       state.nodes = Array.isArray(data.nodes) ? data.nodes : [];
       state.groups = Array.isArray(data.groups) ? data.groups : [];
       state.selected = new Set(
@@ -181,7 +228,11 @@
         ),
       );
       renderCatalog();
+      await refreshStatus(true);
+      loadFiles();
+      if (!source) connectEvents();
     } catch (error) {
+      state.projectReady = false;
       notice(`配置加载失败：${error.message}`);
       if (!state.nodes.length) {
         $("catalog").replaceChildren(
@@ -196,10 +247,10 @@
   function renderJob() {
     const job = state.job;
     const active = hasActiveBuild();
-    const adminBusy = state.busy && !active;
-    $("stop").hidden = !active;
+    const adminBusy = state.busy && !active && !state.queued;
+    $("stop").hidden = !active && !state.queued;
     $("stop").disabled = state.stopping;
-    $("stop").textContent = state.stopping ? "正在停止…" : "停止构建";
+    $("stop").textContent = state.stopping ? "正在停止…" : state.queued ? "取消排队" : "停止构建";
     const ended = job && job.end;
     const index = Math.max(0, Number(job && job.index) || 0);
     const count = Number(job && job.count) || ((job && job.queue) || []).length;
@@ -211,8 +262,10 @@
         : count
           ? Math.min(100, ((index + pct / 100) / count) * 100)
           : 0;
-    $("job-state").textContent = adminBusy
-      ? "管理员任务运行中"
+    $("job-state").textContent = state.queued
+      ? "等待构建"
+      : adminBusy
+        ? "其他任务运行中"
       : active
         ? "构建中"
         : ended
@@ -223,8 +276,10 @@
               : "未完成"
           : "待命";
     const current = job && job.queue && job.queue[index];
-    $("job-title").textContent = adminBusy
-      ? "管理员任务正在运行，请稍后提交构建"
+    $("job-title").textContent = state.queued
+      ? "任务已提交，等待轮到当前项目"
+      : adminBusy
+        ? "其他任务正在运行，可等待队列调度"
       : active
         ? current
           ? current.name
@@ -237,7 +292,9 @@
     $("job-percent").textContent =
       !adminBusy && job ? `${Math.round(overall)}%` : "—";
     $("progress-bar").style.width = `${adminBusy ? 0 : overall}%`;
-    $("job-stage").textContent = adminBusy
+    $("job-stage").textContent = state.queued
+      ? `已进入队列${state.queuePosition != null ? ` · 当前排在第 ${state.queuePosition} 位` : ""}`
+      : adminBusy
       ? "等待管理员任务完成后，即可开始构建。"
       : active
         ? `${count ? `${Math.min(index + 1, count)} / ${count} · ` : ""}${stages[progress.stage] || progress.stage || "等待进度更新"}`
@@ -298,14 +355,19 @@
     const wasBusy = state.busy;
     state.job = data.job || null;
     state.busy = !!data.busy;
+    const jobState = String(data.job && data.job.state || data.state || "").toLowerCase();
+    state.queued = jobState === "queued" || jobState === "pending" || !!data.queued;
+    state.queuePosition = data.queuePosition ?? (data.job && (data.job.queuePosition ?? data.job.position));
+    state.queueEnabled = data.queueEnabled !== false && data.allowQueue !== false;
     renderJob();
     if (wasBusy && !state.busy) loadFiles(state.root, state.path);
   }
   async function refreshStatus(showError = false) {
+    if (!state.projectReady) return;
     if (state.statusRequest) return state.statusRequest;
     state.statusRequest = (async () => {
       try {
-        applyStatus(await api("/api/user/status"));
+        applyStatus(await api(`${apiBase}/status`));
       } catch (error) {
         if (showError) notice(`状态恢复失败：${error.message}`);
       } finally {
@@ -315,12 +377,12 @@
     return state.statusRequest;
   }
   async function startBuild() {
-    if (state.busy || state.submitting || !state.selected.size) return;
+    if (!canSubmit() || state.submitting || !state.selected.size) return;
     state.submitting = true;
     notice("");
     renderSelection();
     try {
-      await api("/api/user/build", { nodeIds: [...state.selected] });
+      await api(`${apiBase}/build`, { nodeIds: [...state.selected] });
       state.busy = true;
       state.queueStatus = {};
       state.logs = [];
@@ -336,11 +398,11 @@
     }
   }
   async function stopBuild() {
-    if (state.stopping || !hasActiveBuild()) return;
+    if (state.stopping || (!hasActiveBuild() && !state.queued)) return;
     state.stopping = true;
     renderJob();
     try {
-      await api("/api/user/build/stop", {});
+      await api(`${apiBase}/build/stop`, {});
       appendLog("已请求停止构建，正在等待任务结束…");
       await refreshStatus(true);
     } catch (error) {
@@ -356,7 +418,12 @@
       refreshStatus(true);
       return;
     }
+    if (type === "queued" || type === "queue" || type === "job-queued") {
+      refreshStatus();
+      return;
+    }
     if (type === "job-start") {
+      state.queued = false;
       state.queueStatus = {};
       state.logs = [];
       $("logs").textContent = "构建开始…";
@@ -420,7 +487,7 @@
       $("connection-dot").classList.add("offline");
       return;
     }
-    source = new EventSource("/api/user/events");
+    source = new EventSource(`${apiBase}/events`);
     source.onopen = () => {
       state.connected = true;
       $("connection-label").textContent = "实时连接";
@@ -446,6 +513,9 @@
     };
     [
       "hello",
+      "queued",
+      "queue",
+      "job-queued",
       "job-start",
       "profile-start",
       "progress",
@@ -485,7 +555,7 @@
   async function downloadEntry(entry, root = state.root) {
     try {
       const params = new URLSearchParams({ root, path: entry.path });
-      const downloadUrl = `/api/user/${entry.type === "directory" ? "download-folder" : "download"}?${params}`;
+      const downloadUrl = `${apiBase}/${entry.type === "directory" ? "download-folder" : "download"}?${params}`;
       // Stream ZIPs, large files, and unknown sizes through the browser download manager.
       const knownSize =
         typeof entry.size === "number" && Number.isFinite(entry.size);
@@ -643,7 +713,7 @@
       const params = new URLSearchParams();
       if (root) params.set("root", root);
       if (path) params.set("path", path);
-      const data = await api(`/api/user/files?${params}`);
+      const data = await api(`${apiBase}/files?${params}`);
       if (request !== state.fileRequest) return;
       state.roots = Array.isArray(data.roots) ? data.roots : [];
       state.root = data.root || "";
@@ -739,9 +809,6 @@
     if (!document.hidden) refreshStatus(true);
   });
   loadCatalog();
-  refreshStatus(true);
-  loadFiles();
-  connectEvents();
   let poll = setInterval(() => {
     if (
       !document.hidden &&

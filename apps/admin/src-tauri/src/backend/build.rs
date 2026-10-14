@@ -106,7 +106,10 @@ struct Context {
 }
 impl Context {
     fn new(backend: &super::Backend, b: &Value, pr: &Value, no: i64) -> Self {
-        let cfg = backend.config();
+        let cfg = b
+            .get("_configSnapshot")
+            .cloned()
+            .unwrap_or_else(|| backend.config());
         let project = backend.resolve(text(b, "projectPath"));
         let base = path_at(
             &project,
@@ -429,7 +432,8 @@ fn exclude(name: &str, dir: bool, target: i64) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(
         n.as_str(),
-        ".git"
+        ".buildtool"
+            | ".git"
             | ".svn"
             | ".hg"
             | ".vs"
@@ -595,13 +599,15 @@ impl super::Backend {
             }
             let c = Context::new(self, body, &pr, no);
             let (_, _, display) = c.command(&engine).map_err(|e| (400, e))?;
-            let (nodes, groups) = group_nodes(&cfg, body, &pr);
+            let (nodes, groups) =
+                group_nodes(body.get("_configSnapshot").unwrap_or(&cfg), body, &pr);
             let p = &c.profile;
             items.push(json!({"name":p["name"],"target":p["targetName"],"output":c.output,"logFile":c.log,"command":display,"versionCode":if number(&p["target"])==Some(13){json!(no)}else{Value::Null},"buildNo":no,"dev":p["dev"],"buildAddressables":p["buildAddressables"],"androidBuildKind":p["androidBuildKind"],"autoZip":p["autoZip"],"customBuildDir":p["customBuildDir"],"previewName":c.artifact_name(true),"archiveDir":c.base.join(&c.success).join(format!("{}-<时间戳>",safe(text(p,"name")))),"vcsBeforeBuild":{"enabled":!nodes.is_empty(),"groups":groups,"nodeCount":nodes.len(),"nodeNames":nodes.iter().map(|n|choose(&[n["name"].clone(),n["id"].clone()])).collect::<Vec<_>>()}}));
         }
         Ok(json!({"ok":true,"items":items,"engine":engine}))
     }
-    pub(super) fn start_build(self: &Arc<Self>, body: Value) -> Result<Value, Fault> {
+    pub(super) fn start_build(self: &Arc<Self>, mut body: Value) -> Result<Value, Fault> {
+        body["_configSnapshot"] = self.config();
         let project = self.resolve(text(&body, "projectPath"));
         if !super::project_valid(&project) {
             return Err((400, "Unity 项目路径无效".into()));
@@ -627,13 +633,20 @@ impl super::Backend {
             return Err((400, "未配置有效的 Unity 可执行文件路径".into()));
         }
         self.preview(&body)?;
-        self.acquire()?;
-        *self.job.lock().unwrap() = json!({"state":"starting","queue":profiles,"count":profiles.len(),"index":0,"lines":[],"progress":{},"outputs":[],"exitCode":null,"end":null,"lastFail":null,"stopOnError":body["stopOnError"]!=false,"cancel":false});
+        self.reserve_build()?;
+        *self.job.lock().unwrap() = json!({"state":"queued","queue":profiles,"count":profiles.len(),"index":0,"lines":[],"progress":{},"outputs":[],"exitCode":null,"end":null,"lastFail":null,"stopOnError":body["stopOnError"]!=false,"cancel":false});
         let me = Arc::clone(self);
         let count = profiles.len();
         let spawn = thread::Builder::new()
             .name("unity-build".into())
             .spawn(move || {
+                if !me.wait_turn() {
+                    me.job.lock().unwrap()["state"] = json!("done");
+                    me.job.lock().unwrap()["end"] = json!({"ok":false,"reason":"cancelled"});
+                    me.emit(json!({"type":"job-end","ok":false,"reason":"cancelled"}));
+                    me.release();
+                    return;
+                }
                 me.job.lock().unwrap()["state"] = json!("running");
                 me.emit(json!({"type":"job-start","count":count}));
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -663,7 +676,9 @@ impl super::Backend {
             self.release();
             return Err((500, e.to_string()));
         }
-        Ok(json!({"ok":true}))
+        Ok(
+            json!({"ok":true,"state":"queued","projectId":self.project_id,"scheduler":self.scheduler_status()}),
+        )
     }
     fn build_queue(
         self: &Arc<Self>,
@@ -722,9 +737,7 @@ impl super::Backend {
                 Ok(out) => {
                     let mut cfg = self.config();
                     cfg["lastVersionCode"] = json!(no);
-                    cfg["projectPath"] = body["projectPath"].clone();
-                    cfg["outputBase"] = json!(c.base);
-                    cfg["successDir"] = json!(c.success);
+
                     if let Err(e) = self.save(cfg) {
                         self.build_line(index, &format!("[警告] 构建号保存失败: {e}"));
                     }
@@ -876,7 +889,11 @@ impl super::Backend {
         pr: &Value,
         profile_index: usize,
     ) -> Result<(), String> {
-        let (nodes, groups) = group_nodes(&self.config(), body, pr);
+        let (nodes, groups) = group_nodes(
+            body.get("_configSnapshot").unwrap_or(&self.config()),
+            body,
+            pr,
+        );
         if nodes.is_empty() {
             return Ok(());
         }
@@ -1168,8 +1185,10 @@ mod tests {
         )
         .unwrap();
         let zip_path = root.path().join("artifact.zip");
-        let backend =
-            super::super::Backend::new(root.path().join("config.json"), root.path().to_path_buf());
+        let backend = super::super::Backend::new(
+            root.path().join(".buildtool/config.json"),
+            root.path().to_path_buf(),
+        );
         write_zip(&backend, root.path(), &zip_path, 19).unwrap();
         let file = File::open(zip_path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();

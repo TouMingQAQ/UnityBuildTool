@@ -36,11 +36,14 @@ impl Service {
         {
             return Err("管理令牌必须为非空安全 ASCII 字符串".into());
         }
-        let server =
-            Arc::new(Server::http("127.0.0.1:0").map_err(|e| format!("启动 HTTP 服务失败: {e}"))?);
+        let backend = Backend::new(config, root.clone());
+        let settings = backend.config();
+        let (host, port) = listen_address(&settings)?;
+        let server = Arc::new(Server::http((host.as_str(), port)).map_err(|e| {
+            format!("启动 HTTP 服务失败 ({host}:{port})，请检查监听地址或端口是否被占用: {e}")
+        })?);
         let addr = server.server_addr().to_ip().ok_or("无效的监听地址")?;
         let base = format!("http://{addr}");
-        let backend = Backend::new(config, root.clone());
         let stopping = Arc::new(AtomicBool::new(false));
         let state = Arc::new(State {
             backend: backend.clone(),
@@ -112,6 +115,44 @@ struct Active(Arc<State>);
 impl Drop for Active {
     fn drop(&mut self) {
         self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+fn listen_address(config: &Value) -> Result<(String, u16), Box<dyn Error>> {
+    let host = config["server"]["host"].as_str().unwrap_or("127.0.0.1");
+    let ip: std::net::IpAddr = host.parse().map_err(|_| "监听地址必须为有效 IP 地址")?;
+    if ip.is_unspecified() {
+        return Err("请配置明确的本机监听 IP 地址，不能使用通配地址".into());
+    }
+    let port = match config["server"].get("port") {
+        None => 50345,
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .ok_or("监听端口必须为 1–65535 的整数")?,
+    };
+    if port == 0 && !cfg!(test) {
+        return Err("监听端口必须为 1–65535 的整数".into());
+    }
+    Ok((ip.to_string(), port))
+}
+fn project_route(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/api/projects/")?;
+    let (slug, suffix) = rest.split_once('/')?;
+    if slug.is_empty() || suffix.is_empty() {
+        return None;
+    }
+    Some((slug, suffix))
+}
+fn project_page(path: &str) -> Option<(&str, bool)> {
+    let rest = path.strip_prefix("/p/")?;
+    let (slug, suffix) = rest.split_once('/').unwrap_or((rest, ""));
+    if slug.is_empty() {
+        return None;
+    }
+    match suffix {
+        "" => Some((slug, false)),
+        "workspace" | "workspace/" => Some((slug, true)),
+        _ => None,
     }
 }
 fn header(name: &str, value: &str) -> Header {
@@ -273,6 +314,10 @@ fn serve(mut request: Request, state: &State) {
                 include_bytes!("../../public/app.js").as_slice(),
                 "text/javascript; charset=utf-8",
             )),
+            "/admin/monitor.js" => Some((
+                include_bytes!("../../public/monitor.js").as_slice(),
+                "text/javascript; charset=utf-8",
+            )),
             "/admin/style.css" => Some((
                 include_bytes!("../../public/style.css").as_slice(),
                 "text/css; charset=utf-8",
@@ -283,7 +328,28 @@ fn serve(mut request: Request, state: &State) {
         return;
     }
     if path.starts_with("/api/") {
-        let public = path.starts_with("/api/user/");
+        let route = project_route(&path);
+        let public = route.is_some() || path.starts_with("/api/user/");
+        let scope = if let Some((slug, _)) = route {
+            match state.backend.project_by_slug(slug) {
+                Ok((id, project)) => Some((id, project, slug.to_owned())),
+                Err(e) => {
+                    error(request, e);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        // Unscoped public routes cannot select or expose another project's state.
+        if public && scope.is_none() {
+            error(request, (404, "请通过项目链接访问".into()));
+            return;
+        }
+        let path = route
+            .map(|(_, suffix)| format!("/api/user/{suffix}"))
+            .unwrap_or(path.clone());
+        let admin_project = query.get("project").map(String::as_str);
         if public && !public_route(&method, &path) {
             error(request, (404, "用户端不提供此操作".into()));
             return;
@@ -293,7 +359,17 @@ fn serve(mut request: Request, state: &State) {
             return;
         }
         if method == "GET" && (path == "/api/user/events" || path == "/api/build/events") {
-            events(request, state, public);
+            let event_id = scope
+                .as_ref()
+                .map(|(id, _, _)| id.as_str())
+                .or(admin_project);
+            events(
+                request,
+                state,
+                public,
+                event_id,
+                scope.as_ref().map(|(_, _, slug)| slug.as_str()),
+            );
             return;
         }
         if method == "GET"
@@ -302,7 +378,8 @@ fn serve(mut request: Request, state: &State) {
                 "/api/user/files" | "/api/user/download" | "/api/user/download-folder"
             )
         {
-            let roots = download::roots(&state.backend.config(), &state.root);
+            let config = &scope.as_ref().expect("public project scope validated").1;
+            let roots = download::roots(config, &state.root);
             let id = query.get("root").map(String::as_str).unwrap_or("");
             let relative = query.get("path").map(String::as_str).unwrap_or("");
             if path == "/api/user/files" {
@@ -382,7 +459,16 @@ fn serve(mut request: Request, state: &State) {
                 }
             }
         };
-        match state.backend.handle(&method, &path, body) {
+        let result = if let Some((_, _, slug)) = scope {
+            state
+                .backend
+                .handle_user_project(&method, &path, body, &slug)
+        } else if let Some(id) = admin_project {
+            state.backend.handle_admin_project(&method, &path, body, id)
+        } else {
+            state.backend.handle(&method, &path, body)
+        };
+        match result {
             Ok(v) => respond_json(request, 200, v),
             Err(e) => error(request, e),
         }
@@ -390,6 +476,43 @@ fn serve(mut request: Request, state: &State) {
     }
     if method != "GET" {
         error(request, (405, "仅支持 GET".into()));
+        return;
+    }
+    if matches!(path.as_str(), "/" | "/index.html") {
+        let config = state.backend.config();
+        let mut html = String::from("<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>构建项目</title><link rel=\"stylesheet\" href=\"/user.css\"><body><main style=\"max-width:760px;margin:80px auto;padding:24px\"><h1>构建项目</h1><p>选择项目，进入对应的构建页面。</p><ul>");
+        for project in config["projects"].as_array().into_iter().flatten() {
+            if project["enabled"].as_bool() == Some(false) {
+                continue;
+            }
+            let slug = project["slug"].as_str().unwrap_or("");
+            let name = project["name"].as_str().unwrap_or(slug);
+            html.push_str(&format!(
+                "<li><a href=\"/p/{}\">{}</a></li>",
+                encode(slug),
+                escape_html(name)
+            ));
+        }
+        html.push_str("</ul></main></body></html>");
+        let _ = request.respond(
+            Response::from_string(html)
+                .with_header(header("Content-Type", "text/html; charset=utf-8"))
+                .with_header(header("Cache-Control", "no-store"))
+                .with_header(header("X-Content-Type-Options", "nosniff")),
+        );
+        return;
+    }
+    if let Some((slug, workspace)) = project_page(&path) {
+        if let Err(e) = state.backend.project_by_slug(slug) {
+            error(request, e);
+            return;
+        }
+        let bytes = if workspace {
+            include_bytes!("../../../user/public/workspace.html").as_slice()
+        } else {
+            include_bytes!("../../../user/public/index.html").as_slice()
+        };
+        static_response(request, Some((bytes, "text/html; charset=utf-8")));
         return;
     }
     let asset = match path.as_str() {
@@ -426,6 +549,14 @@ fn static_response(request: Request, asset: Option<(&'static [u8], &str)>) {
         None => error(request, (404, "not found".into())),
     }
 }
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
 fn encode(name: &str) -> String {
     name.bytes()
         .map(|b| {
@@ -436,6 +567,9 @@ fn encode(name: &str) -> String {
             }
         })
         .collect()
+}
+fn event_matches_project(event: &Value, project_id: Option<&str>) -> bool {
+    project_id.is_none_or(|id| event["projectId"].as_str() == Some(id))
 }
 fn public_event(event: &Value) -> Option<Value> {
     let kind = event["type"].as_str()?;
@@ -449,6 +583,11 @@ fn public_event(event: &Value) -> Option<Value> {
         _ => return None,
     };
     let mut safe = json!({"type":kind});
+    for key in ["projectId", "projectName", "taskId"] {
+        if let Some(value) = event.get(key).filter(|v| v.is_string()) {
+            safe[key] = value.clone();
+        }
+    }
     for key in fields {
         if let Some(v) = event.get(*key) {
             safe[*key] = v.clone();
@@ -466,20 +605,36 @@ fn public_event(event: &Value) -> Option<Value> {
     }
     Some(safe)
 }
-fn events(request: Request, state: &State, public: bool) {
+fn events(
+    request: Request,
+    state: &State,
+    public: bool,
+    project_id: Option<&str>,
+    slug: Option<&str>,
+) {
     let receiver = state.backend.subscribe();
-    let hello = if public {
-        let status = state
+    let result = if public {
+        state
             .backend
-            .handle("GET", "/api/user/status", json!({}))
-            .unwrap_or(json!({"job":null}));
-        json!({"type":"hello","job":status["job"]})
+            .handle_user_project("GET", "/api/user/status", json!({}), slug.unwrap_or(""))
+    } else if let Some(id) = project_id {
+        state
+            .backend
+            .handle_admin_project("GET", "/api/status", json!({}), id)
     } else {
-        let status = state
-            .backend
-            .handle("GET", "/api/status", json!({}))
-            .unwrap_or(json!({}));
-        json!({"type":"hello","job":status["job"],"check":status["check"],"vcs":status["vcs"]})
+        state.backend.handle("GET", "/api/status", json!({}))
+    };
+    let status = match result {
+        Ok(v) => v,
+        Err(e) => {
+            error(request, e);
+            return;
+        }
+    };
+    let hello = if public {
+        json!({"type":"hello","projectId":project_id,"job":status["job"],"queue":status["queue"]})
+    } else {
+        json!({"type":"hello","projectId":project_id,"job":status["job"],"check":status["check"],"vcs":status["vcs"]})
     };
     let mut writer = request.into_writer();
     if writer.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nX-Accel-Buffering: no\r\n\r\nretry: 3000\n\n").is_err(){return;}
@@ -489,6 +644,9 @@ fn events(request: Request, state: &State, public: bool) {
     while !state.stopping.load(Ordering::Acquire) {
         let frame = match receiver.recv_timeout(Duration::from_secs(1)) {
             Ok(event) => {
+                if !event_matches_project(&event, project_id) {
+                    continue;
+                }
                 let event = if public {
                     match public_event(&event) {
                         Some(e) => e,
@@ -524,6 +682,7 @@ mod tests {
     fn loopback_routes_and_authorization() {
         use std::net::TcpStream;
         let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("config.json"), json!({"schemaVersion":2,"server":{"port":0},"projects":[{"id":"alpha","slug":"alpha","name":"Alpha","enabled":true}]}).to_string()).unwrap();
         let (service, base) = Service::start(
             directory.path().join("config.json"),
             directory.path().to_owned(),
@@ -546,7 +705,8 @@ mod tests {
             String::from_utf8_lossy(&response).into_owned()
         };
         assert!(send("/", "").starts_with("HTTP/1.1 200"));
-        assert!(send("/api/user/catalog", "").starts_with("HTTP/1.1 200"));
+        assert!(send("/p/alpha", "").starts_with("HTTP/1.1 200"));
+        assert!(send("/api/projects/unknown/catalog", "").starts_with("HTTP/1.1 404"));
         assert!(send("/api/config", "").starts_with("HTTP/1.1 401"));
         assert!(send("/admin/app.js", "").starts_with("HTTP/1.1 401"));
         let bootstrap = send("/admin/?token=test-token", "");
@@ -556,14 +716,135 @@ mod tests {
             .starts_with("HTTP/1.1 200"));
         assert!(send("/admin/", "x-admin-token: test-token\r\n").starts_with("HTTP/1.1 200"));
         assert!(send("/api/user/upload", "").starts_with("HTTP/1.1 404"));
-        assert!(send("/api/user/files?path=%2E%2E%2Fsecret", "").starts_with("HTTP/1.1 200")); // No configured roots exposes no data.
+        assert!(
+            send("/api/projects/alpha/files?path=%2E%2E%2Fsecret", "").starts_with("HTTP/1.1 200")
+        ); // No configured roots exposes no data.
+        let before = std::fs::read(directory.path().join("config.json")).unwrap();
+        assert!(send("/p/alpha/workspace", "").starts_with("HTTP/1.1 200"));
         let mut stream = TcpStream::connect(base.trim_start_matches("http://")).unwrap();
         write!(stream,"POST /api/config HTTP/1.1\r\nHost: {}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}",base.trim_start_matches("http://")).unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).unwrap();
         assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 401"));
-        assert!(!directory.path().join("config.json").exists());
+        assert_eq!(
+            before,
+            std::fs::read(directory.path().join("config.json")).unwrap()
+        );
         service.stop();
+    }
+    fn get(base: &str, path: &str, admin: bool) -> String {
+        use std::net::TcpStream;
+        let host = base.trim_start_matches("http://");
+        let mut socket = TcpStream::connect(host).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            socket,
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{}\r\n",
+            if admin {
+                "x-admin-token: test-token\r\n"
+            } else {
+                ""
+            }
+        )
+        .unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        response
+    }
+    #[test]
+    fn project_routes_downloads_and_fixed_port() {
+        let dir = tempfile::tempdir().unwrap();
+        for (project, data) in [("a", "alpha-only"), ("b", "beta-only")] {
+            std::fs::create_dir_all(dir.path().join(project).join("Builds")).unwrap();
+            std::fs::write(dir.path().join(project).join("Builds/result.txt"), data).unwrap();
+        }
+        let config = json!({"schemaVersion":2,"server":{"host":"127.0.0.1","port":0},"projects":[
+            {"id":"a","slug":"alpha","name":"A <client>","enabled":true,"projectPath":"a","outputBase":"Builds","buildNodes":[{"id":"same","name":"Alpha node","profileAssetPath":"Assets/Alpha.asset"}]},
+            {"id":"b","slug":"beta","name":"B","enabled":true,"projectPath":"b","outputBase":"Builds","buildNodes":[{"id":"same","name":"Beta node","profileAssetPath":"Assets/Beta.asset"}]},
+            {"id":"off","slug":"disabled","name":"Disabled","enabled":false}
+        ]});
+        let config_path = dir.path().join("config.json");
+        std::fs::write(&config_path, config.to_string()).unwrap();
+        let (service, base) = Service::start(
+            config_path.clone(),
+            dir.path().to_owned(),
+            "test-token".into(),
+        )
+        .unwrap();
+        let homepage = get(&base, "/", false);
+        assert!(
+            homepage.contains("/p/alpha")
+                && homepage.contains("/p/beta")
+                && homepage.contains("A &lt;client&gt;")
+        );
+        assert!(!homepage.contains("/p/disabled"));
+        let alpha = get(&base, "/api/projects/alpha/catalog", false);
+        assert!(
+            alpha.starts_with("HTTP/1.1 200")
+                && alpha.contains("Alpha node")
+                && !alpha.contains("Beta node")
+        );
+        let beta = get(&base, "/api/projects/beta/catalog", false);
+        assert!(beta.contains("Beta node") && !beta.contains("Alpha node"));
+        assert!(get(
+            &base,
+            "/api/projects/alpha/download?root=builds&path=result.txt",
+            false
+        )
+        .ends_with("alpha-only"));
+        assert!(get(
+            &base,
+            "/api/projects/beta/download?root=builds&path=result.txt",
+            false
+        )
+        .ends_with("beta-only"));
+        assert!(get(
+            &base,
+            "/api/projects/alpha/download?path=../../b/Builds/result.txt",
+            false
+        )
+        .starts_with("HTTP/1.1 403"));
+        for path in [
+            "/p/unknown",
+            "/p/disabled",
+            "/api/projects/unknown/files",
+            "/api/projects/disabled/status",
+            "/api/projects/alpha/config",
+            "/api/user/catalog",
+        ] {
+            assert!(
+                get(&base, path, false).starts_with("HTTP/1.1 404"),
+                "{path}"
+            );
+        }
+        assert!(get(&base, "/api/status?project=a", true).starts_with("HTTP/1.1 200"));
+        assert!(get(&base, "/api/config?project=a", true).contains("Alpha node"));
+        let port: u16 = base.rsplit(':').next().unwrap().parse().unwrap();
+        let mut fixed = config;
+        fixed["server"]["port"] = json!(port);
+        std::fs::write(&config_path, fixed.to_string()).unwrap();
+        assert!(
+            Service::start(config_path, dir.path().to_owned(), "another-token".into()).is_err()
+        );
+        service.stop();
+    }
+    #[test]
+    fn address_and_event_scope() {
+        assert_eq!(
+            listen_address(&json!({})).unwrap(),
+            ("127.0.0.1".into(), 50345)
+        );
+        assert!(listen_address(&json!({"server":{"port":65536}})).is_err());
+        assert!(listen_address(&json!({"server":{"host":"0.0.0.0"}})).is_err());
+        assert!(project_route("/api/projects/alpha/catalog").is_some());
+        assert!(event_matches_project(&json!({"projectId":"a"}), Some("a")));
+        assert!(!event_matches_project(&json!({"projectId":"b"}), Some("a")));
+        assert!(!event_matches_project(
+            &json!({"type":"job-end"}),
+            Some("a")
+        ));
     }
     #[test]
     fn public_stream_omits_credentials() {

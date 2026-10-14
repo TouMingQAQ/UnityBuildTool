@@ -15,16 +15,18 @@
   <body class="landing" data-page="home">
     <div class="sky" aria-hidden="true"></div>
     <header class="site-header">
-      <a class="brand" href="/"
+      <a class="brand" href="#" data-project-home
         ><span class="brand-icon">T</span>TBuildTool<span class="brand-tag"
           >BUILD STUDIO</span
         ></a
-      ><a class="nav-link" href="/workspace"
+      ><a class="nav-link" href="#" data-project-workspace
         >进入工作台 <span aria-hidden="true">↗</span></a
       >
     </header>
     <main class="hero">
+      <div id="notice" class="notice" role="alert" hidden></div>
       <div class="hero-copy">
+        <p class="project-label" data-project-name>正在加载项目…</p>
         <div class="eyebrow">
           <span class="status-dot"></span> 从想法，到即刻可用
         </div>
@@ -32,7 +34,7 @@
         <p class="hero-description">
           把复杂留给引擎，把灵感留给你。<br />选择目标，一键构建，让每个版本稳稳抵达。
         </p>
-        <a class="button primary hero-cta" href="/workspace"
+        <a class="button primary hero-cta" href="#" data-project-workspace
           >开启构建之旅 <span aria-hidden="true">↗</span></a
         >
         <div class="hero-note">

@@ -121,12 +121,16 @@ pub struct Root {
     pub directory: PathBuf,
 }
 pub fn roots(config: &Value, runtime: &Path) -> Vec<Root> {
+    // An envelope is never a download root. Callers must resolve one project first.
+    if config.get("projects").is_some() || config["enabled"].as_bool() == Some(false) {
+        return vec![];
+    }
     let project = config["projectPath"].as_str().unwrap_or("");
     let output = config["outputBase"]
         .as_str()
         .filter(|s| !s.is_empty())
         .unwrap_or("Builds");
-    if project.is_empty() && config["outputBase"].as_str().unwrap_or("").is_empty() {
+    if project.is_empty() {
         return vec![];
     }
     let project = if Path::new(project).is_absolute() {
@@ -391,6 +395,16 @@ fn archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn envelope_and_disabled_projects_never_become_roots() {
+        let runtime = tempfile::tempdir().unwrap();
+        assert!(roots(&json!({"projects":[{"projectPath":"secret"}],"projectPath":"legacy","outputBase":"Builds"}), runtime.path()).is_empty());
+        assert!(roots(
+            &json!({"enabled":false,"projectPath":"secret","outputBase":"Builds"}),
+            runtime.path()
+        )
+        .is_empty());
+    }
     #[test]
     fn relative_project_uses_runtime_directly() {
         let runtime = tempfile::tempdir().unwrap();

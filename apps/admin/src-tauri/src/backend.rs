@@ -1,5 +1,7 @@
 mod build;
 mod check;
+mod projects;
+mod monitor;
 #[cfg(test)]
 mod tests;
 mod vcs;
@@ -56,6 +58,11 @@ pub struct Backend {
     job: Mutex<Value>,
     check: Mutex<Value>,
     vcs_job: Mutex<Value>,
+    pub(super) project_id: Option<String>,
+    pub(super) parent: Option<std::sync::Weak<Backend>>,
+    pub(super) children: Mutex<std::collections::HashMap<String, Arc<Backend>>>,
+    monitor: monitor::Monitor,
+    scheduler: Arc<projects::Scheduler>,
 }
 impl Backend {
     pub fn new(config_path: PathBuf, runtime_root: PathBuf) -> Arc<Self> {
@@ -71,7 +78,15 @@ impl Backend {
                 json!({})
             }
         };
-        Arc::new(Self {
+        let migrated = projects::migrate(cfg.clone());
+        if migrated != cfg && config_path.is_file() {
+            let backup = config_path.with_extension("v1.backup.json");
+            if !backup.exists() {
+                let _ = fs::copy(&config_path, backup);
+            }
+        }
+        let cfg = migrated;
+        let backend = Arc::new(Self {
             config_path,
             runtime_root,
             config: Mutex::new(cfg),
@@ -81,10 +96,23 @@ impl Backend {
             job: Mutex::new(Value::Null),
             check: Mutex::new(Value::Null),
             vcs_job: Mutex::new(Value::Null),
-        })
+            project_id: None,
+            parent: None,
+            children: Mutex::new(std::collections::HashMap::new()),
+            monitor: monitor::Monitor::default(),
+            scheduler: Arc::new(projects::Scheduler::default()),
+        });
+        if let Err(e) = backend.persist(&backend.config()) {
+            eprintln!("配置迁移保存失败: {e}");
+        }
+        backend
     }
     pub fn config(&self) -> Value {
-        self.config.lock().unwrap().clone()
+        let mut cfg = self.config.lock().unwrap().clone();
+        if let Some(parent) = self.parent.as_ref().and_then(std::sync::Weak::upgrade) {
+            cfg["ai"] = parent.config()["ai"].clone();
+        }
+        cfg
     }
     pub fn subscribe(&self) -> Receiver<Value> {
         let (tx, rx) = mpsc::channel();
@@ -92,10 +120,20 @@ impl Backend {
         rx
     }
     pub fn busy(&self) -> bool {
+        if self.project_id.is_none() {
+            let state = self.scheduler.state.lock().unwrap();
+            return state.0.is_some() || !state.1.is_empty();
+        }
         *self.busy.lock().unwrap()
     }
     pub fn stop(&self) {
         *self.stop.lock().unwrap() = true;
+        if self.project_id.is_none() {
+            for child in self.children.lock().unwrap().values() {
+                child.stop();
+            }
+        }
+        self.scheduler.wake.notify_all();
     }
     pub fn wait_idle(&self, timeout: Duration) {
         let start = Instant::now();
@@ -113,40 +151,60 @@ impl Backend {
         abs(&self.runtime_root, p)
     }
     pub(super) fn acquire(&self) -> Result<(), Fault> {
+        let mut state = self.scheduler.state.lock().unwrap();
         let mut busy = self.busy.lock().unwrap();
-        if *busy {
+        if *busy || state.0.is_some() || !state.1.is_empty() {
             return Err((409, "已有构建、检测或仓库更新任务运行中".into()));
         }
-        *self.stop.lock().unwrap() = false;
         *busy = true;
+        *self.stop.lock().unwrap() = false;
+        state.0 = Some(self.scheduler_key());
         Ok(())
     }
     pub(super) fn release(&self) {
+        let mut state = self.scheduler.state.lock().unwrap();
+        let key = self.scheduler_key();
+        if state.0.as_ref() == Some(&key) {
+            state.0 = None;
+        }
+        state.1.retain(|p| p != &key);
         *self.busy.lock().unwrap() = false;
+        self.scheduler.wake.notify_all();
     }
-    pub(crate) fn emit(&self, e: Value) {
+    pub(crate) fn emit(&self, mut e: Value) {
+        if let Some(id) = &self.project_id {
+            e["projectId"] = json!(id);
+        }
+        self.monitor.record(&e);
         self.tx
             .lock()
             .unwrap()
             .retain(|s| s.send(e.clone()).is_ok());
+        if let Some(parent) = self.parent.as_ref().and_then(std::sync::Weak::upgrade) {
+            parent.emit(e);
+        }
+    }
+    fn persist(&self, c: &Value) -> Result<(), String> {
+        if let Some(p) = self.config_path.parent() {
+            fs::create_dir_all(p).map_err(|e| e.to_string())?;
+        }
+        let tmp = self.config_path.with_extension("json.tmp");
+        fs::write(
+            &tmp,
+            serde_json::to_vec_pretty(c).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        fs::rename(tmp, &self.config_path).map_err(|e| e.to_string())
     }
     pub(super) fn save(&self, c: Value) -> Result<(), String> {
         if !c.is_object() {
             return Err("配置必须是对象".into());
         }
-        if let Some(p) = self.config_path.parent() {
-            fs::create_dir_all(p).map_err(|e| e.to_string())?;
+        if self.project_id.is_some() {
+            self.save_project(c)
+        } else {
+            self.save_root(c)
         }
-        let mut current = self.config.lock().unwrap();
-        let tmp = self.config_path.with_extension("json.tmp");
-        fs::write(
-            &tmp,
-            serde_json::to_vec_pretty(&c).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-        fs::rename(&tmp, &self.config_path).map_err(|e| e.to_string())?;
-        *current = c;
-        Ok(())
     }
     pub(super) fn run_process(
         &self,
@@ -208,6 +266,7 @@ impl Backend {
             }));
         }
         drop(tx);
+        self.monitor.pids.lock().unwrap().push(child.id());
         let started = Instant::now();
         let result = loop {
             for text in rx.try_iter() {
@@ -249,6 +308,7 @@ impl Backend {
             }
         };
         // A spawned descendant may retain stdout after its parent exits.
+        self.monitor.pids.lock().unwrap().retain(|pid| *pid != child.id());
         // Never let an inherited pipe keep the scheduler busy indefinitely.
         let drain_started = Instant::now();
         while readers.iter().any(|r| !r.is_finished())
@@ -516,7 +576,9 @@ impl Backend {
         thread::spawn(move || {
             struct Release<'a>(&'a Backend);
             impl Drop for Release<'_> {
-                fn drop(&mut self) { self.0.release(); }
+                fn drop(&mut self) {
+                    self.0.release();
+                }
             }
             let _release = Release(&me);
             me.emit(json!({"type":"vcs-start","count":nodes.len()}));
@@ -550,16 +612,28 @@ impl Backend {
         Ok(json!({"ok":true}))
     }
     pub fn handle(self: &Arc<Self>, method: &str, path: &str, body: Value) -> Result<Value, Fault> {
+        if self.project_id.is_none() && path != "/api/config" && path != "/api/open-user-page" && path != "/api/monitor" {
+            let id = self.config()["projects"]
+                .as_array()
+                .and_then(|p| p.first())
+                .map(|p| valstr(p, "id"))
+                .ok_or((404, "尚未配置项目".into()))?;
+            return self.handle_admin_project(method, path, body, &id);
+        }
         match (method, path) {
             ("GET", "/api/user/catalog") => Ok(self.catalog()),
             ("GET", "/api/user/status") => Ok(self.public_status()),
             ("POST", "/api/user/build") => self.user_build(body),
             ("POST", "/api/user/build/stop") => {
-                if self.job.lock().unwrap()["state"] == "running" {
+                if matches!(
+                    self.job.lock().unwrap()["state"].as_str(),
+                    Some("running" | "queued" | "starting")
+                ) {
                     self.stop();
                 }
                 Ok(json!({"ok":true}))
             }
+            ("GET", "/api/monitor") => self.monitor_snapshot(),
             ("GET", "/api/config") => Ok(json!({"ok":true,"config":self.config()})),
             ("GET", "/api/status") => Ok(
                 json!({"config":self.config(),"unityExes":self.detect()["exes"],"cli":"unity","outputs":self.outputs()["outputs"],"job":self.job.lock().unwrap().clone(),"check":self.check.lock().unwrap().clone(),"vcs":self.vcs_job.lock().unwrap().clone()}),
@@ -575,7 +649,7 @@ impl Backend {
                 for (k, v) in body.as_object().unwrap() {
                     c[k] = v.clone();
                 }
-                self.save(c).map_err(|e| (500, e))?;
+                self.save(c).map_err(|e| (400, e))?;
                 Ok(json!({"ok":true,"config":self.config()}))
             }
             ("GET", "/api/unity-detect") => Ok(self.detect()),
@@ -598,7 +672,7 @@ impl Backend {
                 }
                 let mut c = self.config();
                 c["vcs"] = body;
-                self.save(c).map_err(|e| (500, e))?;
+                self.save(c).map_err(|e| (400, e))?;
                 Ok(json!({"ok":true}))
             }
             ("POST", "/api/vcs/probe") => {
@@ -613,8 +687,17 @@ impl Backend {
             ),
             ("POST", "/api/open-user-page") => {
                 let url = valstr(&body, "url");
-                let parsed = url.parse::<reqwest::Url>().map_err(|_| (400, "网页地址无效".into()))?;
-                if parsed.scheme() != "http" || parsed.host_str() != Some("127.0.0.1") || parsed.path() != "/" || parsed.query().is_some() || !parsed.username().is_empty() || parsed.password().is_some() {
+                let parsed = url
+                    .parse::<reqwest::Url>()
+                    .map_err(|_| (400, "网页地址无效".into()))?;
+                if parsed.scheme() != "http"
+                    || parsed.host_str() != Some("127.0.0.1")
+                        && parsed.host_str() != self.config()["server"]["host"].as_str()
+                    || parsed.path() != "/" && !parsed.path().starts_with("/p/")
+                    || parsed.query().is_some()
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                {
                     return Err((400, "只能打开本机用户主页".into()));
                 }
                 open::that(url).map_err(|e| (500, e.to_string()))?;

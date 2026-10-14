@@ -26,6 +26,8 @@ const ENV_LINES = [
 
 const state = {
   config: {},
+  projects: [],
+  activeProjectId: '',
   profiles: [],        // 扫描结果（全部）
   filter: 'all',
   queue: [],           // 当前构建执行的 profile/node 列表
@@ -122,7 +124,12 @@ async function copyToClipboard(text, successMsg = '已复制到剪贴板') {
 
 /* ─────────────── 通用 API 请求 ─────────────── */
 
-async function api(path, body) {
+async function api(path, body, global = false) {
+  const projectId = global ? '' : state.activeProjectId;
+  if (!global && !projectId && !path.startsWith('/api/open-user-page')) throw new Error('请先创建或选择项目');
+  if (!global && projectId && !path.startsWith('/api/open-user-page')) {
+    path += (path.includes('?') ? '&' : '?') + 'project=' + encodeURIComponent(state.activeProjectId);
+  }
   const opt = { method: 'GET', credentials: 'same-origin', headers: { 'X-Admin-Token': adminToken } };
   if (body !== undefined) {
     opt.method = 'POST';
@@ -130,6 +137,7 @@ async function api(path, body) {
     opt.body = JSON.stringify(body);
   }
   const r = await fetch(path, opt);
+  if (projectId && projectId !== state.activeProjectId) throw new Error('项目已切换，请在当前项目重试');
   const ct = r.headers.get('content-type') || '';
   if (!r.ok) {
     let msg = 'HTTP ' + r.status;
@@ -276,16 +284,160 @@ function collectConfig() {
   };
 }
 
+let saveChain = Promise.resolve();
+let lastSaveError = null;
+let switchingProject = false;
+function enqueueSave(action) {
+  const next = saveChain.then(action);
+  saveChain = next.then(() => { lastSaveError = null; }, error => { lastSaveError = error; });
+  return next;
+}
+function persistProjectForm() {
+  const id = state.activeProjectId;
+  if (!id) return Promise.resolve();
+  const config = JSON.parse(JSON.stringify(collectConfig()));
+  state.config = config;
+  return enqueueSave(() => api('/api/config?project=' + encodeURIComponent(id), config, true));
+}
 function scheduleSave() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    state.config = collectConfig();
-    try {
-      await api("/api/config", state.config);
-    } catch (e) {
-      console.warn("save config:", e.message);
-    }
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    persistProjectForm().catch(e => showToast('配置保存失败：' + e.message, 'err'));
   }, 500);
+}
+async function flushProjectSaves() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; await persistProjectForm(); }
+  if (vcsSaveTimer) { clearTimeout(vcsSaveTimer); vcsSaveTimer = null; await persistVcsForm(); }
+  await saveChain;
+  if (lastSaveError) throw new Error('当前项目配置尚未保存：' + lastSaveError.message + '；请修改配置后重试');
+}
+
+function renderScheduler(scheduler) {
+  if (!scheduler) return;
+  const active = state.projects.find(p => p.id === scheduler.activeProjectId);
+  const pending = Array.isArray(scheduler.pendingProjectIds) ? scheduler.pendingProjectIds.length : 0;
+  $('globalQueueSummary').textContent = `全局队列：${scheduler.activeProjectId ? '正在执行 ' + (active?.name || scheduler.activeProjectId) : '空闲'} · ${pending} 个项目等待中`;
+}
+function activeProject() { return state.projects.find(p => p.id === state.activeProjectId); }
+function projectWebsite() {
+  const p = activeProject();
+  return p ? new URL('/p/' + encodeURIComponent(p.slug), location.origin).href : '';
+}
+function renderProjects() {
+  $('adminProjectSelect').innerHTML = state.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.enabled === false ? '（已停用）' : ''}</option>`).join('');
+  $('adminProjectSelect').value = state.activeProjectId;
+  $('adminProjectList').innerHTML = state.projects.map(p => `<button type="button" role="tab" aria-selected="${p.id === state.activeProjectId}" class="project-tab ${p.id === state.activeProjectId ? 'active' : ''}" data-project-id="${esc(p.id)}"><span>${esc(p.name)}</span><small>/p/${esc(p.slug)}${p.enabled === false ? ' · 已停用' : ''}</small></button>`).join('');
+  $('adminProjectList').querySelectorAll('[data-project-id]').forEach(b => b.onclick = () => selectProject(b.dataset.projectId).catch(e => showToast(e.message, 'err')));
+  const p = activeProject();
+  $('projectDisplayName').value = p?.name || '';
+  $('projectSlug').value = p?.slug || '';
+  $('projectEnabled').checked = p?.enabled !== false;
+  for (const id of ['projectDisplayName', 'projectSlug', 'projectEnabled', 'btnSaveProject', 'btnDeleteProject']) $(id).disabled = !p;
+  $('userWebsiteLink').href = projectWebsite() || '#';
+  $('userWebsiteLink').textContent = p ? projectWebsite() : '请在设置中创建项目';
+  const hint = $('settingsProjectHint');
+  if (hint) { const p = activeProject(); hint.textContent = p ? `以下构建、仓库、引擎和检测配置均属于“${p.name}”` : '请选择项目'; }
+
+  $('btnCopyWebsite').disabled = !p;
+}
+async function readRootConfig() {
+  const result = await api('/api/config', undefined, true);
+  const root = result.config || result;
+  state.projects = Array.isArray(root.projects) ? root.projects : [];
+  state.rootConfig = root;
+  return root;
+}
+async function changeRootConfig(change) {
+  await flushProjectSaves();
+  const root = await readRootConfig();
+  change(root);
+  await api('/api/config', root, true);
+  await readRootConfig();
+  renderProjects();
+}
+async function saveProjectMetadata() {
+  const id = state.activeProjectId;
+  const name = $('projectDisplayName').value.trim();
+  const slug = $('projectSlug').value.trim();
+  const enabled = $('projectEnabled').checked;
+  if (!name) throw new Error('请输入项目名称');
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 64) throw new Error('链接标识仅允许小写字母、数字和连字符，长度不超过 64');
+  await changeRootConfig(root => {
+    if (root.projects.some(p => p.id !== id && p.slug === slug)) throw new Error('链接标识已被其他项目使用');
+    const p = root.projects.find(p => p.id === id);
+    if (!p) throw new Error('项目已不存在');
+    Object.assign(p, { name, slug, enabled });
+  });
+  showToast('项目信息已保存', 'ok');
+}
+async function addProject() {
+  const id = generateId('project_');
+  await changeRootConfig(root => {
+    let slug = 'project';
+    for (let n = 2; root.projects.some(p => p.slug === slug); n++) slug = 'project-' + n;
+    root.projects.push({ id, slug, name: '新项目', enabled: true, projectPath: '', engine: { mode: 'batchmode', unityExe: '', nographics: true }, buildNodes: [], buildGroups: [], profileConfigs: {}, vcs: { nodes: [], groups: [] }, buildNumber: '-1', outputBase: 'Builds', successDir: '构建成功' });
+  });
+  await selectProject(id);
+  switchTab('projects');
+  $('projectDisplayName').focus();
+}
+async function deleteProject() {
+  const p = activeProject();
+  if (!p || !window.confirm(`删除“${p.name}”的项目配置？工程和构建文件会保留。`)) return;
+  await changeRootConfig(root => { root.projects = root.projects.filter(x => x.id !== p.id); });
+  await selectProject(state.projects[0]?.id || '', true);
+  showToast('项目配置已删除', 'ok');
+}
+function resetProjectView() {
+  state.profiles = []; state.queue = []; state.buildNodes = []; state.buildGroups = []; state.profileConfigs = {};
+  state.vcsNodes = []; state.vcsGroups = []; state.vcsNodeStates = {}; state.job = null; state.checkJob = null; state.vcsJob = null;
+  state.checkResults = {}; state.checkTargets = [19, 13]; state.checkRunDir = null; state.outputs = []; state.rawLogs = ''; state.checkRawLogs = ''; state.vcsRawLogs = '';
+  state.jobProgress = null; state.activeBuildGroupId = 'all'; state.buildEditNodeId = null; state.vcsEditId = null;
+  for (const id of ['profileCfgModal', 'vcsNodeModal', 'previewModal', 'aiModal']) $(id).classList.add('hidden');
+  setInfo('');
+  if ($('ignoredInfo')) $('ignoredInfo').textContent = '';
+  if ($('unityExeSel')) $('unityExeSel').innerHTML = '';
+  for (const id of ['logView', 'checkLogView', 'vcsLogView', 'jobSummary', 'checkJobSummary', 'vcsJobSummary']) if ($(id)) $(id).textContent = '';
+  for (const id of ['jobBanner', 'checkBanner', 'vcsBanner', 'progressBarWrap']) if ($(id)) $(id).classList.add('hidden');
+  for (const id of ['btnStart', 'btnCheckStart']) $(id).disabled = false;
+  for (const id of ['btnStop', 'btnCheckStop', 'btnAi']) $(id).disabled = true;
+  updateHeaderStatus('idle', '就绪 · 空闲');
+}
+async function selectProject(id, skipFlush = false) {
+  if (switchingProject) return;
+  switchingProject = true;
+  $('adminProjectSelect').disabled = true;
+  try {
+    if (!skipFlush) await flushProjectSaves();
+    if (sse) { sse.close(); sse = null; }
+    state.activeProjectId = id;
+    resetProjectView();
+    renderProjects();
+    if (!id) { fillForm({}); renderVcs(); renderOutputs(); return; }
+    const st = await api('/api/status');
+    fillForm(st.config);
+    state.config = st.config || {};
+    if (st.scheduler) renderScheduler(st.scheduler);
+  if (st.job?.state === 'queued') {
+    state.job = st.job;
+    state.queue = st.job.queue || [];
+    $('progressArea').classList.remove('hidden');
+    buildProgressFromJob({ ...st.job, index: -1 });
+    showBanner('run', `排队中${st.job.queuePosition ? `（第 ${st.job.queuePosition} 位）` : ''}`);
+    $('btnStart').disabled = true;
+    $('btnStop').disabled = false;
+  }
+  if (st.unityExes) fillUnitySelect(st.unityExes);
+    state.outputs = Array.isArray(st.outputs) ? st.outputs : [];
+    renderOutputs();
+    const vc = st.config?.vcs || {};
+    state.vcsNodes = Array.isArray(vc.nodes) ? vc.nodes : [];
+    state.vcsGroups = Array.isArray(vc.groups) ? vc.groups : [];
+    renderVcs(); renderCheckResults();
+    initSSE();
+    if ($('projectPath').value.trim()) await doScan();
+  } finally { switchingProject = false; $('adminProjectSelect').disabled = false; }
 }
 
 function fillForm(cfg) {
@@ -1235,9 +1387,17 @@ async function doStart() {
   showBanner("run", `正在启动批量构建流水线（共 ${activeNodes.length} 个节点）…`);
   updateHeaderStatus("running", "批量打包启动中…");
   try {
-    await api("/api/build/start", buildBody());
-    showToast("已启动批量打包", "ok");
-    appendLog(`[系统] 构建任务已成功接收，Unity 正在后台加载工程与编译资源，日志即将开始输出…\n`);
+    await flushProjectSaves();
+    const result = await api("/api/build/start", buildBody());
+    if (result.state === 'queued' || result.queued || result.queuePosition || result.position) {
+      showBanner('run', `任务已进入全局队列（第 ${result.queuePosition || result.position || 1} 位）`);
+      updateHeaderStatus('running', '等待构建…');
+      appendLog('[系统] 任务已排队，等待其他项目完成后执行。\n');
+      showToast('构建任务已排队', 'ok');
+    } else {
+      showToast("已启动批量打包", "ok");
+      appendLog(`[系统] 构建任务已成功接收，Unity 正在后台加载工程与编译资源，日志即将开始输出…\n`);
+    }
   } catch (e) {
     showBanner("fail", "启动失败：" + e.message);
     updateHeaderStatus("fail", "启动失败");
@@ -1576,9 +1736,11 @@ async function doAiAnalyze() {
 let sse = null;
 function initSSE() {
   if (sse) sse.close();
-  sse = new EventSource('/api/build/events');
+  const projectId = state.activeProjectId;
+  sse = new EventSource('/api/build/events?project=' + encodeURIComponent(projectId));
 
   sse.onmessage = e => {
+    if (projectId !== state.activeProjectId) return;
     try {
       const d = JSON.parse(e.data);
       handleSSE(d);
@@ -1591,6 +1753,15 @@ function initSSE() {
 }
 
 function handleSSE(d) {
+  if (d.scheduler) renderScheduler(d.scheduler);
+  if (d.projectId && d.projectId !== state.activeProjectId) return;
+  if (d.type === 'job-queued') {
+    state.job = { ...(d.job || d), state: 'queued' };
+    showBanner('run', `排队中${d.queuePosition ? `（第 ${d.queuePosition} 位）` : ''}`);
+    updateHeaderStatus('running', '等待构建…');
+    $('btnStart').disabled = true; $('btnStop').disabled = false;
+    return;
+  }
   // ── 环境编译检测事件 ──
   if (d.type === 'check-hello') {
     if (d.check) {
@@ -1720,7 +1891,14 @@ function handleSSE(d) {
     if (d.job) {
       state.job = d.job;
       state.jobProgress = d.job.progress || {};
-      if (d.job.state === 'running' || d.job.state === 'starting') {
+      if (d.job.state === 'queued') {
+        state.queue = d.job.queue || [];
+        $('progressArea').classList.remove('hidden');
+        buildProgressFromJob({ ...d.job, index: -1 });
+        showBanner('run', `排队中${d.job.queuePosition ? `（第 ${d.job.queuePosition} 位）` : ''}`);
+        updateHeaderStatus('running', '等待构建…');
+        $('btnStart').disabled = true; $('btnStop').disabled = false;
+      } else if (d.job.state === 'running' || d.job.state === 'starting') {
         $('progressArea').classList.remove('hidden');
         buildProgressFromJob(d.job);
         showBanner('run', `正在批量打包（第 ${d.job.index + 1}/${d.job.count} 项）`);
@@ -1964,14 +2142,17 @@ function vcsBusy() {
 
 /* 保存节点 / 分组配置（防抖） */
 let vcsSaveTimer = null;
+function persistVcsForm() {
+  const id = state.activeProjectId;
+  if (!id) return Promise.resolve();
+  const body = JSON.parse(JSON.stringify({ nodes: state.vcsNodes, groups: state.vcsGroups }));
+  return enqueueSave(() => api('/api/vcs/save?project=' + encodeURIComponent(id), body, true));
+}
 function scheduleVcsSave() {
   clearTimeout(vcsSaveTimer);
-  vcsSaveTimer = setTimeout(async () => {
-    try {
-      await api('/api/vcs/save', { nodes: state.vcsNodes, groups: state.vcsGroups });
-    } catch (e) {
-      console.warn('vcs save:', e.message);
-    }
+  vcsSaveTimer = setTimeout(() => {
+    vcsSaveTimer = null;
+    persistVcsForm().catch(e => showToast('仓库配置保存失败：' + e.message, 'err'));
   }, 400);
 }
 
@@ -2509,22 +2690,34 @@ function filterVcsLogView(search) {
 /* ─────────────── 页面初始化与事件绑定 ─────────────── */
 
 async function init() {
-  // 0. 立即建立 SSE 连接：无论后续任何初始化是否失败，日志/进度都通过 SSE 实时推送
-  initSSE();
+  // Select a project before opening its event stream.
 
   // Keep every configuration panel inside one settings dialog.
   for (const tab of ['profiles', 'vcs', 'settings', 'check', 'help']) {
     $('settingsContent').appendChild($(`tab-pane-${tab}`));
   }
-  const website = new URL('/', location.origin).href;
-  $('userWebsiteLink').href = website;
-  $('userWebsiteLink').textContent = website;
   $('userWebsiteLink').onclick = async e => {
     e.preventDefault();
-    try { await api('/api/open-user-page', { url: website }); }
-    catch (error) { showToast(`打开网页失败：${error.message}`, 'error'); }
+    const url = projectWebsite();
+    if (!url) return;
+    try { await api('/api/open-user-page', { url }, true); }
+    catch (error) { showToast(`打开网页失败：${error.message}`, 'err'); }
   };
-  $('btnCopyWebsite').onclick = () => copyToClipboard(website, '用户网页链接已复制');
+  $('btnCopyWebsite').onclick = () => copyToClipboard(projectWebsite(), '项目网页链接已复制');
+  $('adminProjectSelect').onchange = e => selectProject(e.target.value).catch(error => { renderProjects(); showToast(error.message, 'err'); });
+  const runProjectAction = action => async () => {
+    try { await action(); } catch (error) { showToast(error.message, 'err'); }
+  };
+  $('btnAddProject').onclick = runProjectAction(addProject);
+  $('btnSaveProject').onclick = runProjectAction(saveProjectMetadata);
+  $('btnDeleteProject').onclick = runProjectAction(deleteProject);
+  $('btnSaveServer').onclick = runProjectAction(async () => {
+    const port = Number($('serverPort').value);
+    if ($('serverPort').value === '' || !Number.isInteger(port) || port < 0 || port > 65535) throw new Error('端口必须是 0 到 65535 的整数');
+    const host = $('serverHost').value;
+    await changeRootConfig(root => { root.server = { ...root.server, host, port }; });
+    showToast('服务设置已保存，重启应用后生效', 'ok');
+  });
   $('btnOpenSettings').onclick = () => { switchTab('profiles'); $('btnCloseSettings').focus(); };
   $('btnCloseSettings').onclick = closeSettings;
   $('btnSettingsDone').onclick = closeSettings;
@@ -2719,26 +2912,13 @@ async function init() {
 
   // 10. 初始化状态与数据加载
   try {
-    const st = await api('/api/status');
-    fillForm(st.config);
-    if (st.unityExes) fillUnitySelect(st.unityExes);
-    state.outputs = Array.isArray(st.outputs) ? st.outputs : [];
-    renderOutputs();
-    // 版本管理配置恢复
-    const vc = (st.config && st.config.vcs) || {};
-    state.vcsNodes = Array.isArray(vc.nodes)
-      ? vc.nodes.map(n => ({ id: String(n.id || ''), name: n.name || '', path: n.path || '', branch: n.branch || '', revert: n.revert || '', type: n.type || 'auto' }))
-      : [];
-    state.vcsGroups = Array.isArray(vc.groups)
-      ? vc.groups
-          .filter(g => g && (g.id || g.name))
-          .map(g => ({ id: String(g.id || ''), name: g.name || '分组', nodeIds: Array.isArray(g.nodeIds) ? g.nodeIds.map(String) : [] }))
-      : [];
-    renderVcs();
-    if (state.vcsNodes.length) doVcsProbe(state.vcsNodes.map(n => n.id));
-    if ($('projectPath').value.trim()) {
-      doScan();
-    }
+    const root = await readRootConfig();
+    $('serverHost').value = root.server?.host || '127.0.0.1';
+    $('serverPort').value = root.server?.port ?? 0;
+    const id = root.defaultProjectId && state.projects.some(p => p.id === root.defaultProjectId)
+      ? root.defaultProjectId : state.projects[0]?.id || '';
+    await selectProject(id, true);
+    if (!id) switchTab('projects');
   } catch (e) {
     console.error('init error:', e);
   }

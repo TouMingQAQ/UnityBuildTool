@@ -115,7 +115,7 @@ impl super::Backend {
         } else {
             self.resolve(text(b, "projectPath"))
         };
-        let dir = self.runtime_root().join("check-results/check-<时间戳>");
+        let dir = project.join(".buildtool/check-results/check-<时间戳>");
         let engine = &b["engine"];
         let items: Vec<Value> = selected.iter().map(|&target| {
             let log = dir.join(format!("target-{target}.log"));
@@ -156,9 +156,8 @@ impl super::Backend {
         }
         let minutes = timeout_minutes(&b);
         self.acquire()?;
-        let dir = self
-            .runtime_root()
-            .join("check-results")
+        let dir = project
+            .join(".buildtool/check-results")
             .join(format!("check-{}", Local::now().format("%Y%m%d-%H%M%S-%f")));
         if let Err(e) = fs::create_dir_all(&dir) {
             self.release();
