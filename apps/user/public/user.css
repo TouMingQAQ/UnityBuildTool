@@ -631,6 +631,13 @@ input[type="checkbox"] {
   border-radius: 10px;
   transition: width 0.5s;
 }
+.progress-track > div.indeterminate {
+  animation: progress-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes progress-indeterminate {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(300%); }
+}
 .progress-meta {
   font-size: 10px;
   color: var(--muted);

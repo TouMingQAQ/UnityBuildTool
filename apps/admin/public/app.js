@@ -1900,6 +1900,9 @@ function handleSSE(d) {
       } else if (d.job.state === 'running' || d.job.state === 'starting') {
         $('progressArea').classList.remove('hidden');
         buildProgressFromJob(d.job);
+        const saved = state.jobProgress[d.job.index] || { stage: '启动中…', pct: null };
+        updateProgressItem(d.job.index, 'running', saved.stage, saved.pct);
+        updateGlobalProgressBar(d.job.index, saved.stage, saved.pct);
         showBanner('run', `正在批量打包（第 ${d.job.index + 1}/${d.job.count} 项）`);
         updateHeaderStatus('running', '批量打包中…');
         $('btnStart').disabled = true;
@@ -1930,6 +1933,7 @@ function handleSSE(d) {
     const devTag = d.dev ? ' [DEV]' : '';
     appendLog(`\n====================================================\n▶ ${tag} 开始构建: ${d.name} (${d.target})${devTag}\n  输出: ${d.output}\n  命令: ${d.cmd}\n====================================================\n`);
     updateProgressItem(d.index, 'running', '启动中…', null);
+    updateGlobalProgressBar(d.index, '启动中…', null);
     showBanner('run', `正在构建第 ${d.index + 1}/${state.job ? state.job.count : '?'} 项：${d.name}`);
     return;
   }
@@ -2022,17 +2026,18 @@ function updateGlobalProgressBar(idx, stage, pct) {
   const st = $('pbarStage');
   const pt = $('pbarPct');
 
-  const total = state.queue.length || 1;
+  const total = state.job?.count || state.queue.length || 1;
+  const known = pct != null && Number.isFinite(Number(pct)) && Number(pct) >= 0;
   const basePct = (idx / total) * 100;
   const itemPct = pct != null ? (pct / total) : 0;
   const overall = Math.min(100, Math.round(basePct + itemPct));
 
   if (fill) {
-    fill.style.width = overall + '%';
-    fill.className = 'progress-bar-fill';
+    fill.style.width = known ? overall + '%' : '35%';
+    fill.className = 'progress-bar-fill' + (known ? '' : ' indeterminate');
   }
   if (st) st.textContent = `[${idx + 1}/${total}] ${stage || '进行中…'}`;
-  if (pt) pt.textContent = overall + '%';
+  if (pt) pt.textContent = known ? `当前阶段 ${pct}%` : '进行中…';
 }
 
 function buildProgressInit() {

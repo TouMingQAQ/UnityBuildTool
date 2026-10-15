@@ -766,6 +766,15 @@ body {
   box-shadow: 0 0 12px var(--accent-glow);
 }
 
+.progress-bar-fill.indeterminate {
+  animation: progress-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(300%); }
+}
+
 .progress-bar-fill.ok {
   background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
   box-shadow: 0 0 12px var(--color-green-glow);

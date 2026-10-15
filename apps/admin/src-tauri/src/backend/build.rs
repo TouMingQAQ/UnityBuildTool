@@ -394,6 +394,10 @@ impl ProgressDecoder {
     fn push(&mut self, bytes: &[u8]) -> Vec<(String, Option<u64>)> {
         self.pending.extend_from_slice(bytes);
         let mut events = Vec::new();
+        // Native Unity/Bee output is written directly to the log and may never
+        // reach Application.logMessageReceivedThreaded in the Unity plugin.
+        static STEPS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let steps = STEPS.get_or_init(|| regex::Regex::new(r"\[(\d+)/(\d+)\s+\d+(?:\.\d+)?s\]").unwrap());
         while let Some(end) = self.pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=end).collect();
             let line = String::from_utf8_lossy(&line);
@@ -404,6 +408,20 @@ impl ProgressDecoder {
                         let pct = v["pct"].as_f64().filter(|p| p.is_finite() && *p >= 0.0)
                             .map(|p| p.clamp(0.0, 100.0).round() as u64);
                         events.push((stage.to_owned(), pct));
+                    }
+                }
+                // A malformed protocol message must not fall through to native parsing.
+                continue;
+            }
+            if let Some(stage) = line.trim().strip_prefix("DisplayProgressbar:") {
+                if !stage.trim().is_empty() {
+                    events.push((stage.trim().to_owned(), None));
+                }
+            } else if let Some(c) = steps.captures(&line) {
+                if let (Ok(done), Ok(total)) = (c[1].parse::<f64>(), c[2].parse::<f64>()) {
+                    if total > 0.0 {
+                        events.push((format!("编译构建步骤 {}/{}", &c[1], &c[2]),
+                            Some((done / total * 100.0).clamp(0.0, 100.0).round() as u64)));
                     }
                 }
             }
@@ -1159,11 +1177,24 @@ mod tests {
 
     #[test]
     fn progress_protocol_handles_byte_boundaries_and_ignores_lifecycle() {
-        let log = "DisplayProgressbar: ignored\n[TBuildToolProgress] {\"version\":1,\"stage\":\"编译中文\",\"pct\":42.4}\n[TBuildToolProgress] {\"version\":1,\"stage\":\"归档\",\"pct\":-1}\n[TBuildToolProgress] {\"version\":2,\"stage\":\"bad\",\"pct\":100}\n[TBuildToolProgress] broken\n";
+        let log = "ordinary log\n[TBuildToolProgress] {\"version\":1,\"stage\":\"编译中文\",\"pct\":42.4}\n[TBuildToolProgress] {\"version\":1,\"stage\":\"归档\",\"pct\":-1}\n[TBuildToolProgress] {\"version\":2,\"stage\":\"bad\",\"pct\":100}\n[TBuildToolProgress] broken\n";
         let mut decoder = ProgressDecoder::default();
         let mut events = Vec::new();
         for byte in log.as_bytes() { events.extend(decoder.push(&[*byte])); }
-        assert_eq!(events, vec![("编译中文".into(), Some(42)), ("归档".into(), None)]);
+        assert_eq!(events, vec![
+            ("编译中文".into(), Some(42)),
+            ("归档".into(), None),
+        ]);
+    }
+
+    #[test]
+    fn progress_decoder_reads_native_unity_log_progress() {
+        let log = "DisplayProgressbar: Compiling Scripts\n[2368/3249  0s] ILPP-Configuration\n[3249/3249  6s] Csc Assembly-CSharp.dll\n";
+        let mut decoder = ProgressDecoder::default();
+        let events = decoder.push(log.as_bytes());
+        assert_eq!(events[0], ("Compiling Scripts".into(), None));
+        assert_eq!(events[1], ("编译构建步骤 2368/3249".into(), Some(73)));
+        assert_eq!(events[2], ("编译构建步骤 3249/3249".into(), Some(100)));
     }
 
     #[test]

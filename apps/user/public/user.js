@@ -255,12 +255,14 @@
     const index = Math.max(0, Number(job && job.index) || 0);
     const count = Number(job && job.count) || ((job && job.queue) || []).length;
     const progress = (job && job.progress && job.progress[index]) || {};
-    const pct = Math.max(0, Math.min(100, Number(progress.pct) || 0));
+    const pctValue = Number(progress.pct);
+    const hasPct = progress.pct != null && Number.isFinite(pctValue) && pctValue >= 0;
+    const pct = hasPct ? Math.max(0, Math.min(100, pctValue)) : 0;
     const overall =
       ended && ended.ok
         ? 100
         : count
-          ? Math.min(100, ((index + pct / 100) / count) * 100)
+          ? Math.min(100, ((index + (hasPct ? pct / 100 : 0)) / count) * 100)
           : 0;
     $("job-state").textContent = state.queued
       ? "等待构建"
@@ -289,9 +291,11 @@
             ? "构建任务已完成"
             : "构建任务已结束"
           : "准备好，开启一次新构建";
-    $("job-percent").textContent =
-      !adminBusy && job ? `${Math.round(overall)}%` : "—";
-    $("progress-bar").style.width = `${adminBusy ? 0 : overall}%`;
+    const indefinite = active && !ended && !hasPct;
+    $("job-percent").textContent = indefinite ? '进行中…' :
+      !adminBusy && job ? (active ? `当前阶段 ${Math.round(pct)}%` : `${Math.round(overall)}%`) : "—";
+    $("progress-bar").classList.toggle('indeterminate', indefinite);
+    $("progress-bar").style.width = indefinite ? '35%' : `${adminBusy ? 0 : overall}%`;
     $("job-stage").textContent = state.queued
       ? `已进入队列${state.queuePosition != null ? ` · 当前排在第 ${state.queuePosition} 位` : ""}`
       : adminBusy
