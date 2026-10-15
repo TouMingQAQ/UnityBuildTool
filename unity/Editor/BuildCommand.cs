@@ -18,7 +18,7 @@ namespace TBuildTool.Editor
     ///     -projectPath <项目路径> \
     ///     -executeMethod TBuildTool.Editor.BuildCommand.Build \
     ///     -profilePath Assets/Settings/Build Profiles/WallpaperAndroid.asset \
-    ///     -outputPath <输出.apk/.exe/Xcode目录> \
+    ///     -outputDirectory <输出目录> \
     ///     [-wallpaperTarget 13] \                     （可选，13=Android, 19=Win64, 5=Win86, 9=iOS）
     ///     [-dev true] \                               （可选，开启 Development Build）
     ///     [-buildAddressables true/方法名] \          （可选，构建前先打包 Addressables）
@@ -34,9 +34,12 @@ namespace TBuildTool.Editor
     {
         public static void Build()
         {
+            using var progressReporter = new BuildProgressReporter();
             string[] args = Environment.GetCommandLineArgs();
             string profilePath   = GetArg(args, "-profilePath");
-            string outputPath    = GetArg(args, "-outputPath");
+            string outputDirectory = GetArg(args, "-outputDirectory");
+            // Keep explicit file paths supported for existing CLI integrations.
+            string outputPath = outputDirectory ?? GetArg(args, "-outputPath");
             string keystoreName  = GetArg(args, "-keystoreName");
             string keystoreAlias = GetArg(args, "-keystoreAlias");
             string keystorePass  = GetArg(args, "-keystorePass");
@@ -47,11 +50,12 @@ namespace TBuildTool.Editor
 
             if (string.IsNullOrEmpty(profilePath) || string.IsNullOrEmpty(outputPath))
             {
-                Debug.LogError("[TBuildTool] 缺少 -profilePath / -outputPath 参数，无法构建。");
+                Debug.LogError("[TBuildTool] 缺少 -profilePath / -outputDirectory（或兼容参数 -outputPath），无法构建。");
                 EditorApplication.Exit(1);
                 return;
             }
 
+            BuildProgressReporter.Report("加载 Build Profile");
             var profile = AssetDatabase.LoadAssetAtPath<BuildProfile>(profilePath);
             if (profile == null)
             {
@@ -62,7 +66,12 @@ namespace TBuildTool.Editor
 
             // 先激活 Profile，避免批处理/CI 下出现 "Build profile is invalid" 问题
             try { BuildProfile.SetActiveBuildProfile(profile); }
-            catch (Exception e) { Debug.LogWarning("[TBuildTool] 激活 Profile 失败（可忽略）: " + e.Message); }
+            catch (Exception e)
+            {
+                Debug.LogError("[TBuildTool] 激活 Profile 失败: " + e.Message);
+                EditorApplication.Exit(1);
+                return;
+            }
 
             // 目标平台：优先用显式传入的 -wallpaperTarget（数字或名称），否则取当前激活目标。
             BuildTarget target = EditorUserBuildSettings.activeBuildTarget;
@@ -95,6 +104,7 @@ namespace TBuildTool.Editor
             if (needBuildAddressables)
             {
                 string customMethod = (string.Equals(addrArg, "true", StringComparison.OrdinalIgnoreCase) || string.Equals(addrArg, "1", StringComparison.OrdinalIgnoreCase)) ? null : addrArg;
+                BuildProgressReporter.Report("构建 Addressables 资源");
                 bool addrOk = ExecuteAddressablesBuild(customMethod);
                 if (!addrOk)
                 {
@@ -116,32 +126,47 @@ namespace TBuildTool.Editor
                 Debug.Log("[TBuildTool] 🐞 已开启 DEV (Development Build) 调试模式");
             }
 
-            string dir = Path.GetDirectoryName(outputPath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
+            string outputFilePath;
+            try
+            {
+                outputFilePath = outputDirectory == null
+                    ? outputPath
+                    : ResolveOutputPath(outputDirectory, target);
+                string dir = Path.GetDirectoryName(outputFilePath);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("[TBuildTool] 无法确定构建输出路径: " + e.Message);
+                EditorApplication.Exit(1);
+                return;
+            }
 
             // ── 构建进度钩子：扫描 Editor 下所有接入 IBuildProgress 的类，执行构建前阶段 ──
             var context = new BuildProgressContext
             {
                 profilePath = profilePath,
                 target      = target,
-                outputPath  = outputPath,
+                outputPath  = outputFilePath,
             };
             var hooks = ScanBuildProgressHooks();
             Debug.Log("[TBuildTool] BuildProgress 钩子：" + hooks.Count + " 个"
                 + (hooks.Count > 0 ? " → " + string.Join("、", hooks.ConvertAll(h => h.GetType().Name)) : ""));
+            BuildProgressReporter.Report("执行构建前项目步骤");
             InvokeBuildProgress(hooks, context, h => h.OnBeginBuild(context), "OnBeginBuild");
 
             Debug.Log($"[TBuildTool] 开始构建 profile=\"{profile.name}\" target={target} (Options={buildOptions})");
-            Debug.Log($"[TBuildTool] 输出目标路径: {outputPath}");
+            Debug.Log($"[TBuildTool] 输出目标路径: {outputFilePath}");
 
             BuildReport report = null;
             try
             {
+                BuildProgressReporter.Report("构建 Player");
                 report = BuildPipeline.BuildPlayer(new BuildPlayerWithProfileOptions
                 {
                     buildProfile = profile,
-                    locationPathName = outputPath,
+                    locationPathName = outputFilePath,
                     options = buildOptions,
                 });
             }
@@ -170,6 +195,16 @@ namespace TBuildTool.Editor
 
             if (context.succeeded)
             {
+                if (outputDirectory != null)
+                {
+                    var result = new OutputResult
+                    {
+                        outputPath = Path.GetFullPath(report.summary.outputPath),
+                        productName = PlayerSettings.productName,
+                        version = PlayerSettings.bundleVersion,
+                    };
+                    File.WriteAllText(Path.Combine(outputDirectory, "build-result.json"), JsonUtility.ToJson(result));
+                }
                 Debug.Log($"[TBuildTool] 构建成功: {report.summary.outputPath} ({report.summary.totalSize} bytes)");
                 EditorApplication.Exit(0);
             }
@@ -177,6 +212,44 @@ namespace TBuildTool.Editor
             {
                 Debug.LogError($"[TBuildTool] 构建失败: {report.summary.result}，错误数 {report.summary.totalErrors}");
                 EditorApplication.Exit(1);
+            }
+        }
+
+        [Serializable]
+        private sealed class OutputResult
+        {
+            public string outputPath;
+            public string productName;
+            public string version;
+        }
+
+        // Called after activating the Profile and applying platform settings.
+        private static string ResolveOutputPath(string directory, BuildTarget target)
+        {
+            string name = PlayerSettings.productName;
+            if (string.IsNullOrWhiteSpace(name))
+                throw new InvalidOperationException("Player Settings 的 Product Name 不能为空。");
+            foreach (char c in Path.GetInvalidFileNameChars())
+                name = name.Replace(c, '_');
+            switch (target)
+            {
+                case BuildTarget.StandaloneWindows:
+                case BuildTarget.StandaloneWindows64:
+                    return Path.Combine(directory, name + ".exe");
+                case BuildTarget.StandaloneOSX:
+                    return Path.Combine(directory, name + ".app");
+                case BuildTarget.StandaloneLinux64:
+                    return Path.Combine(directory, name);
+                case BuildTarget.Android:
+                    return Path.Combine(directory, EditorUserBuildSettings.exportAsGoogleAndroidProject
+                        ? name + "-ASProject"
+                        : name + (EditorUserBuildSettings.buildAppBundle ? ".aab" : ".apk"));
+                case BuildTarget.iOS:
+                    return Path.Combine(directory, "iOS");
+                case BuildTarget.WebGL:
+                    return Path.Combine(directory, name);
+                default:
+                    throw new NotSupportedException("尚未定义此平台的输出路径: " + target);
             }
         }
 

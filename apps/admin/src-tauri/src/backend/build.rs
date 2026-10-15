@@ -1,6 +1,5 @@
 //! Build queue, Unity command composition, artifact packaging and output discovery.
 use chrono::Local;
-use regex::Regex;
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -101,7 +100,6 @@ struct Context {
     output: PathBuf,
     log: PathBuf,
     no: i64,
-    shared: bool,
     success: String,
 }
 impl Context {
@@ -159,17 +157,13 @@ impl Context {
         if text(&p, "targetName").is_empty() {
             p["targetName"] = json!(super::target_name(number(&p["target"]).unwrap_or(19)));
         }
-        if text(&p, "productName").is_empty() {
-            p["productName"] = p["name"].clone();
-        }
         if text(&p, "absPath").is_empty() {
             p["absPath"] = json!(path_at(&project, text(&p, "assetPath")));
         }
         let kind = text(&p, "androidBuildKind").to_ascii_lowercase();
         p["androidBuildKind"] = json!(kind);
         let custom = text(&p, "customBuildDir").trim();
-        let shared = !custom.is_empty();
-        let dir = if !shared {
+        let dir = if custom.is_empty() {
             base.join(safe(text(&p, "name")))
         } else if Path::new(custom).is_absolute() {
             PathBuf::from(custom)
@@ -182,17 +176,8 @@ impl Context {
         } else {
             base.join(custom)
         };
-        let prod = safe(text(&p, "productName"));
-        let output = match number(&p["target"]).unwrap_or(19) {
-            13 => match kind.as_str() {
-                "aab" => dir.join(format!("{prod}.aab")),
-                "gradleproject" | "gradle" | "asproject" => dir.join(format!("{prod}-ASProject")),
-                _ => dir.join(format!("{prod}.apk")),
-            },
-            9 => dir.join("iOS"),
-            4 => dir.join(format!("{prod}.app")),
-            _ => dir.join(format!("{prod}.exe")),
-        };
+        // The backend supplies a directory; Unity owns the platform-specific filename.
+        let output = dir.clone();
         let log = dir.join("build.log");
         let success = choose(&[
             b["successDir"].clone(),
@@ -210,7 +195,6 @@ impl Context {
             output,
             log,
             no,
-            shared,
             success,
         }
     }
@@ -303,7 +287,7 @@ impl Context {
             "TBuildTool.Editor.BuildCommand.Build".into(),
             "-profilePath".into(),
             string(p, "assetPath"),
-            "-outputPath".into(),
+            "-outputDirectory".into(),
             self.output.to_string_lossy().into_owned(),
             "-wallpaperTarget".into(),
             target.to_string(),
@@ -341,63 +325,112 @@ impl Context {
         Ok((exe, args, display))
     }
     fn artifact_name(&self, preview: bool) -> String {
-        let p = &self.profile;
-        let now = Local::now();
-        let time = if preview {
-            "<时间戳>".into()
-        } else {
-            now.format("%Y%m%d_%H%M%S").to_string()
-        };
-        let date = if preview {
-            "<日期>".into()
-        } else {
-            now.format("%Y%m%d").to_string()
-        };
-        let mut t = if text(p, "nameTemplate").trim().is_empty() {
-            "{Product}_{Platform}_v{Version}_b{VersionCode}_{Time}{Dev}".into()
-        } else {
-            string(p, "nameTemplate")
-        };
-        for (k, v) in [
-            ("{Platform}", string(p, "targetName")),
-            ("{Target}", string(p, "targetName")),
-            ("{Profile}", string(p, "name")),
-            ("{ProfileName}", string(p, "name")),
-            ("{Product}", string(p, "productName")),
-            ("{ProductName}", string(p, "productName")),
-            ("{Version}", string(p, "bundleVersion")),
-            ("{VersionCode}", self.no.to_string()),
-            ("{BuildNumber}", self.no.to_string()),
-            ("{Time}", time.clone()),
-            ("{DateTime}", time),
-            ("{Date}", date),
-            (
-                "{Dev}",
-                if p["dev"] == true {
-                    "_DEV".into()
-                } else {
-                    String::new()
-                },
-            ),
-            (
-                "{DEV}",
-                if p["dev"] == true {
-                    "DEV".into()
-                } else {
-                    String::new()
-                },
-            ),
-        ] {
-            t = t.replace(k, &v)
-        }
-        while t.contains("__") {
-            t = t.replace("__", "_")
-        }
-        while t.contains("--") {
-            t = t.replace("--", "-")
-        }
-        safe(t.trim_matches(&['_', '-'][..]))
+        archive_name(&self.profile, self.no, preview)
     }
+}
+fn archive_name(p: &Value, no: i64, preview: bool) -> String {
+    let now = Local::now();
+    let time = if preview {
+        "<时间戳>".into()
+    } else {
+        now.format("%Y%m%d_%H%M%S").to_string()
+    };
+    let date = if preview {
+        "<日期>".into()
+    } else {
+        now.format("%Y%m%d").to_string()
+    };
+    let mut t = if text(p, "nameTemplate").trim().is_empty() {
+        "{Product}_{Platform}_v{Version}_b{VersionCode}_{Time}{Dev}".into()
+    } else {
+        string(p, "nameTemplate")
+    };
+    for (k, v) in [
+        ("{Platform}", string(p, "targetName")),
+        ("{Target}", string(p, "targetName")),
+        ("{Profile}", string(p, "name")),
+        ("{ProfileName}", string(p, "name")),
+        ("{Product}", string(p, "productName")),
+        ("{ProductName}", string(p, "productName")),
+        ("{Version}", string(p, "bundleVersion")),
+        ("{VersionCode}", no.to_string()),
+        ("{BuildNumber}", no.to_string()),
+        ("{Time}", time.clone()),
+        ("{DateTime}", time),
+        ("{Date}", date),
+        (
+            "{Dev}",
+            if p["dev"] == true {
+                "_DEV".into()
+            } else {
+                String::new()
+            },
+        ),
+        (
+            "{DEV}",
+            if p["dev"] == true {
+                "DEV".into()
+            } else {
+                String::new()
+            },
+        ),
+    ] {
+        t = t.replace(k, &v)
+    }
+    while t.contains("__") {
+        t = t.replace("__", "_")
+    }
+    while t.contains("--") {
+        t = t.replace("--", "-")
+    }
+    safe(t.trim_matches(&['_', '-'][..]))
+}
+
+#[derive(Default)]
+struct ProgressDecoder {
+    pending: Vec<u8>,
+}
+impl ProgressDecoder {
+    fn push(&mut self, bytes: &[u8]) -> Vec<(String, Option<u64>)> {
+        self.pending.extend_from_slice(bytes);
+        let mut events = Vec::new();
+        while let Some(end) = self.pending.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line);
+            if let Some((_, payload)) = line.split_once("[TBuildToolProgress] ") {
+                if let Ok(v) = serde_json::from_str::<Value>(payload.trim()) {
+                    if v["version"].as_u64() != Some(1) { continue; }
+                    if let Some(stage) = v["stage"].as_str().filter(|s| !s.trim().is_empty()) {
+                        let pct = v["pct"].as_f64().filter(|p| p.is_finite() && *p >= 0.0)
+                            .map(|p| p.clamp(0.0, 100.0).round() as u64);
+                        events.push((stage.to_owned(), pct));
+                    }
+                }
+            }
+        }
+        // A malformed/no-newline log must not grow memory indefinitely.
+        if self.pending.len() > 1024 * 1024 { self.pending.clear(); }
+        events
+    }
+}
+
+fn read_build_result(dir: &Path) -> Result<Value, String> {
+    let raw = fs::read_to_string(dir.join("build-result.json")).map_err(|e| {
+        format!("未生成预期产物结果 build-result.json，请更新 Unity 插件或命令模板: {e}")
+    })?;
+    let result: Value = serde_json::from_str(&raw).map_err(|e| format!("构建结果无效: {e}"))?;
+    let output = PathBuf::from(text(&result, "outputPath"));
+    if !output.is_absolute() || output == dir {
+        return Err("构建结果必须包含输出目录内的实际产物绝对路径".into());
+    }
+    let actual = output
+        .canonicalize()
+        .map_err(|e| format!("未生成预期产物: {e}"))?;
+    let root = dir.canonicalize().map_err(|e| e.to_string())?;
+    if !actual.starts_with(&root) || actual == root {
+        return Err("构建产物路径超出输出目录".into());
+    }
+    Ok(result)
 }
 fn group_nodes(config: &Value, request: &Value, profile: &Value) -> (Vec<Value>, Vec<Value>) {
     let gids = choose(&[
@@ -443,6 +476,7 @@ fn exclude(name: &str, dir: bool, target: i64) -> bool {
             | "thumbs.db"
             | "desktop.ini"
             | "ehthumbs.db"
+            | "build-result.json"
     ) || n.contains("donotship")
         || n.contains("dontship")
         || n.contains("backupthisfolder")
@@ -789,23 +823,10 @@ impl super::Backend {
         index: usize,
     ) -> Result<i32, String> {
         fs::create_dir_all(&c.dir).map_err(|e| e.to_string())?;
-        // Shared directories keep caches and other profiles' files; only the exact output is removed.
-        if c.output.is_file() {
-            fs::remove_file(&c.output).map_err(|e| e.to_string())?
-        } else if !c.shared {
-            for e in fs::read_dir(&c.dir).map_err(|e| e.to_string())? {
-                let p = e.map_err(|e| e.to_string())?.path();
-                if p.is_file()
-                    && p.extension()
-                        .and_then(|x| x.to_str())
-                        .map(|x| {
-                            ["apk", "aab", "exe", "zip"].contains(&x.to_ascii_lowercase().as_str())
-                        })
-                        .unwrap_or(false)
-                {
-                    fs::remove_file(p).map_err(|e| e.to_string())?
-                }
-            }
+        // Never guess or delete player filenames. Only invalidate our previous result.
+        let result_path = c.dir.join("build-result.json");
+        if result_path.exists() {
+            fs::remove_file(&result_path).map_err(|e| e.to_string())?;
         }
         let _ = fs::remove_file(&c.log);
         let mut engine = body["engine"].clone();
@@ -820,16 +841,14 @@ impl super::Backend {
         let backend = Arc::clone(self);
         let log = c.log.clone();
         let tail = thread::spawn(move || {
-            let stage_re = Regex::new(r"DisplayProgressbar:\s*([^\r\n]+)").unwrap();
-            let pct_re = Regex::new(r"\[(\d+)/(\d+)\s+\d+s\]").unwrap();
+            let mut decoder = ProgressDecoder::default();
             let mut offset = 0u64;
-            let mut stage = "构建中…".to_string();
-            let mut pct = None;
             loop {
                 if let Ok(mut f) = File::open(&log) {
                     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
                     if len < offset {
-                        offset = 0
+                        offset = 0;
+                        decoder = ProgressDecoder::default();
                     }
                     if len > offset {
                         let _ = f.seek(SeekFrom::Start(offset));
@@ -838,17 +857,9 @@ impl super::Backend {
                         offset += buf.len() as u64;
                         let txt = String::from_utf8_lossy(&buf);
                         backend.build_line(index, &txt);
-                        if let Some(cap) = stage_re.captures_iter(&txt).last() {
-                            stage = cap[1].trim().into()
+                        for (stage, pct) in decoder.push(&buf) {
+                            backend.progress(index, &stage, pct);
                         }
-                        if let Some(cap) = pct_re.captures_iter(&txt).last() {
-                            let a = cap[1].parse::<f64>().unwrap_or(0.0);
-                            let b = cap[2].parse::<f64>().unwrap_or(0.0);
-                            if b > 0.0 {
-                                pct = Some((a / b * 100.0).round().clamp(0.0, 100.0) as u64)
-                            }
-                        }
-                        backend.progress(index, &stage, pct);
                     }
                 }
                 if end.load(Ordering::Acquire) {
@@ -971,18 +982,20 @@ impl super::Backend {
         duration: Duration,
         index: usize,
     ) -> Result<Value, String> {
+        let result = read_build_result(&c.dir)?;
+        let output = PathBuf::from(text(&result, "outputPath"));
         // A zero process exit without a tangible output is a failed build.
-        if !c.output.exists() {
+        if !output.exists() {
             return Err(format!(
                 "Unity 退出成功但未生成预期产物: {}",
-                c.output.display()
+                output.display()
             ));
         }
-        if c.output.is_file() && fs::metadata(&c.output).map_err(|e| e.to_string())?.len() == 0 {
+        if output.is_file() && fs::metadata(&output).map_err(|e| e.to_string())?.len() == 0 {
             return Err("Unity 生成的产物为空".into());
         }
-        if c.output.is_dir() {
-            let mut entries = fs::read_dir(&c.output).map_err(|e| e.to_string())?;
+        if output.is_dir() {
+            let mut entries = fs::read_dir(&output).map_err(|e| e.to_string())?;
             if entries.next().is_none() {
                 return Err("Unity 生成的工程/应用目录为空".into());
             }
@@ -994,33 +1007,32 @@ impl super::Backend {
             now.format("%Y%m%d_%H%M%S_%3f")
         ));
         fs::create_dir_all(&final_dir).map_err(|e| e.to_string())?;
-        let name = c.artifact_name(false);
+        let mut resolved = c.profile.clone();
+        resolved["productName"] = result["productName"].clone();
+        resolved["bundleVersion"] = result["version"].clone();
+        let name = archive_name(&resolved, c.no, false);
         let target = number(&c.profile["target"]).unwrap_or(19);
         let kind = text(&c.profile, "androidBuildKind");
         let android_file = target == 13 && matches!(kind, "apk" | "aab");
-        let mut info=format!("Profile: {}\nTarget: {}\nProduct: {}\nVersion: {}\nBuildNumber: {}\nDEV: {}\nDate: {}\nDuration: {}s\nSourceDir: {}\n",text(&c.profile,"name"),text(&c.profile,"targetName"),text(&c.profile,"productName"),text(&c.profile,"bundleVersion"),c.no,c.profile["dev"]==true,now.format("%Y-%m-%d %H:%M:%S"),duration.as_secs(),c.dir.display());
+        let mut info=format!("Profile: {}\nTarget: {}\nProduct: {}\nVersion: {}\nBuildNumber: {}\nDEV: {}\nDate: {}\nDuration: {}s\nSourceDir: {}\n",text(&c.profile,"name"),text(&c.profile,"targetName"),text(&result,"productName"),text(&result,"version"),c.no,c.profile["dev"]==true,now.format("%Y-%m-%d %H:%M:%S"),duration.as_secs(),c.dir.display());
         fs::write(c.dir.join("build-info.txt"), &info).map_err(|e| e.to_string())?;
         let file = if android_file {
-            let dst = final_dir.join(format!(
-                "{}.{}",
-                name,
-                c.output.extension().unwrap_or_default().to_string_lossy()
-            ));
-            fs::copy(&c.output, &dst).map_err(|e| e.to_string())?;
+            let dst = final_dir.join(output.file_name().ok_or("产物没有文件名")?);
+            fs::copy(&output, &dst).map_err(|e| e.to_string())?;
             dst
         } else if c.profile["autoZip"] != false {
             self.build_line(index, "[归档] 正在生成 ZIP…\n");
             let dst = final_dir.join(format!("{name}.zip"));
             let src = if target == 9 || (target == 13 && !android_file) {
-                fs::write(c.output.join("build-info.txt"), &info).map_err(|e| e.to_string())?;
-                &c.output
+                fs::write(output.join("build-info.txt"), &info).map_err(|e| e.to_string())?;
+                &output
             } else {
                 &c.dir
             };
             write_zip(self, src, &dst, target)?;
             dst
         } else {
-            c.output.clone()
+            output.clone()
         };
         let size = fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
         info.push_str(&format!("Output: {}\nSize: {}\n", file.display(), size));
@@ -1146,6 +1158,77 @@ mod tests {
     }
 
     #[test]
+    fn progress_protocol_handles_byte_boundaries_and_ignores_lifecycle() {
+        let log = "DisplayProgressbar: ignored\n[TBuildToolProgress] {\"version\":1,\"stage\":\"编译中文\",\"pct\":42.4}\n[TBuildToolProgress] {\"version\":1,\"stage\":\"归档\",\"pct\":-1}\n[TBuildToolProgress] {\"version\":2,\"stage\":\"bad\",\"pct\":100}\n[TBuildToolProgress] broken\n";
+        let mut decoder = ProgressDecoder::default();
+        let mut events = Vec::new();
+        for byte in log.as_bytes() { events.extend(decoder.push(&[*byte])); }
+        assert_eq!(events, vec![("编译中文".into(), Some(42)), ("归档".into(), None)]);
+    }
+
+    #[test]
+    fn command_only_supplies_output_directory() {
+        let root = tempdir().unwrap();
+        let backend =
+            super::super::Backend::new(root.path().join("config.json"), root.path().into());
+        for target in [19, 13, 9, 4] {
+            let body = json!({"projectPath":root.path(), "profiles":[{"name":"NotTheProduct", "target":target}]});
+            let ctx = Context::new(&backend, &body, &body["profiles"][0], 1);
+            assert_eq!(ctx.output, ctx.dir);
+            assert!(ctx.profile["productName"].is_null());
+            let (_, args, _) = ctx.command(&json!({"unityExe":"Unity.exe"})).unwrap();
+            let flag = args.iter().position(|a| a == "-outputDirectory").unwrap();
+            assert_eq!(args[flag + 1], ctx.dir.to_string_lossy());
+            assert!(!args.iter().any(|a| a == "-outputPath"));
+        }
+    }
+
+    #[test]
+    fn archive_preserves_unity_apk_name() {
+        let root = tempdir().unwrap();
+        let backend =
+            super::super::Backend::new(root.path().join("config.json"), root.path().into());
+        let body = json!({"projectPath":root.path(), "profiles":[{"name":"Profile", "target":13, "androidBuildKind":"apk"}]});
+        let ctx = Context::new(&backend, &body, &body["profiles"][0], 1);
+        fs::create_dir_all(&ctx.dir).unwrap();
+        let player = ctx.dir.join("ActualProduct.apk");
+        fs::write(&player, b"apk").unwrap();
+        fs::write(
+            ctx.dir.join("build-result.json"),
+            json!({"outputPath":player,"productName":"ActualProduct","version":"2.0"}).to_string(),
+        )
+        .unwrap();
+        let out = backend.archive_build(&ctx, Duration::ZERO, 0).unwrap();
+        assert_eq!(
+            Path::new(out["file"].as_str().unwrap())
+                .file_name()
+                .unwrap(),
+            "ActualProduct.apk"
+        );
+        let info =
+            fs::read_to_string(Path::new(out["dir"].as_str().unwrap()).join("build-info.txt"))
+                .unwrap();
+        assert!(info.contains("Product: ActualProduct\nVersion: 2.0"));
+    }
+
+    #[test]
+    fn result_rejects_paths_outside_output_directory() {
+        let root = tempdir().unwrap();
+        let dir = root.path().join("out");
+        fs::create_dir(&dir).unwrap();
+        let external = root.path().join("external.apk");
+        fs::write(&external, b"old").unwrap();
+        fs::write(
+            dir.join("build-result.json"),
+            json!({"outputPath":external}).to_string(),
+        )
+        .unwrap();
+        assert!(read_build_result(&dir)
+            .unwrap_err()
+            .contains("超出输出目录"));
+    }
+
+    #[test]
     fn archive_rejects_missing_unity_output() {
         let root = tempdir().unwrap();
         let backend =
@@ -1155,10 +1238,9 @@ mod tests {
             project: root.path().to_path_buf(),
             base: root.path().join("Builds"),
             dir: root.path().join("out"),
-            output: root.path().join("out/Game.exe"),
+            output: root.path().join("out"),
             log: root.path().join("out/build.log"),
             no: 1,
-            shared: false,
             success: "成功".into(),
         };
         let err = backend

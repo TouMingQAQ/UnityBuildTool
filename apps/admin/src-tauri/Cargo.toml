@@ -1,6 +1,6 @@
 [package]
 name = "unitybuildtool-admin"
-version = "0.0.2"
+version = "0.0.3"
 description = "UnityBuildTool 管理端"
 authors = ["UnityBuildTool"]
 edition = "2021"

@@ -23,6 +23,7 @@ const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, '../apps/user/public');
 const ADMIN_PUBLIC = path.join(ROOT, '../apps/admin/public');
 const crypto = require('crypto');
+const { ProgressDecoder } = require('./build-progress');
 const { createUserApi, within } = require('./user-api');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || crypto.randomBytes(32).toString('hex');
 const CONFIG_PATH = process.env.CONFIG_PATH || path.join(ROOT, 'config.json');
@@ -918,9 +919,21 @@ function runOne(engine, profile, ctx, idx) {
     job.exitCode = null;
 
     let lastSize = 0;
+    const decoder = new ProgressDecoder();
+    const reportProgress = buf => {
+      for (const progress of decoder.push(buf)) {
+        Object.assign(pstate, progress);
+        if (job && job.progress) job.progress[idx] = progress;
+        broadcast({ type: 'progress', index: idx, ...progress });
+      }
+    };
     const tail = setInterval(() => {
       let st;
       try { st = fs.statSync(ctx.logFile); } catch { return; }
+      if (st && st.size < lastSize) {
+        lastSize = 0;
+        decoder.pending = Buffer.alloc(0);
+      }
       if (!st || st.size <= lastSize) return;
       try {
         const fd = fs.openSync(ctx.logFile, 'r');
@@ -931,22 +944,7 @@ function runOne(engine, profile, ctx, idx) {
         const text = buf.toString('utf8');
         pushLine(idx, text);
 
-        const pb = text.match(/DisplayProgressbar:\s*([^\r\n]+)/g);
-        if (pb && pb.length) pstate.stage = pb[pb.length - 1].replace(/^DisplayProgressbar:\s*/, '').trim();
-        const tk = text.match(/\[(\d+)\/(\d+)\s+\d+s\]/g);
-        if (tk && tk.length) {
-          const mm = tk[tk.length - 1].match(/\[(\d+)\/(\d+)/);
-          if (mm && +mm[2]) pstate.pct = Math.round(+mm[1] / +mm[2] * 100);
-        }
-        const now = Date.now();
-        const changed = pstate.stage !== (pstate.lastStage || '') || pstate.pct !== pstate.lastPct;
-        if (changed && now - pstate.lastEmit >= 300) {
-          pstate.lastEmit = now;
-          pstate.lastStage = pstate.stage;
-          pstate.lastPct = pstate.pct;
-          if (job && job.progress) job.progress[idx] = { stage: pstate.stage, pct: pstate.pct };
-          broadcast({ type: 'progress', index: idx, stage: pstate.stage, pct: pstate.pct });
-        }
+        reportProgress(buf);
       } catch { /* */ }
     }, 200);
 
@@ -961,6 +959,7 @@ function runOne(engine, profile, ctx, idx) {
           fs.readSync(fd, buf, 0, buf.length, lastSize);
           fs.closeSync(fd);
           pushLine(idx, buf.toString('utf8'));
+          reportProgress(buf);
         }
       } catch { /* */ }
 

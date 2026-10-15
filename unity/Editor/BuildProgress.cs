@@ -1,55 +1,105 @@
+using System;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
 namespace TBuildTool.Editor
 {
-    /// <summary>
-    /// TBuildTool 构建进度钩子接口：接入该接口的编辑器类，会被 BuildCommand 在对应构建阶段自动调用
-    /// （取代 Unity 全局构建回调 / 手动逐个调用，打包流程统一由 TBuildTool 驱动）。
-    ///
-    /// 接入规则：
-    ///   - 实现类须放在 Editor 程序集下（程序集名含 "Editor"，如 Assembly-CSharp-Editor、*.Editor），
-    ///     或与本插件（BuildCommand）同程序集；
-    ///   - 必须是普通类：非 abstract / interface / static，且有公开无参构造函数；无需注册；
-    ///   - 单个钩子抛异常不影响其他钩子（记录 Warning 后继续）。
-    ///
-    /// 阶段（对应时期）：
-    ///   - OnBeginBuild    ：构建开始前（BuildPlayer 调用之前）——预检查、资源隐藏等；
-    ///   - OnCancelled     ：构建被取消 / 异常中断时——还原、清理兜底；
-    ///   - OnFinishedBuild ：构建结束（成功或失败，BuildPlayer 返回后）——还原、归档等。
-    /// </summary>
+    /// <summary>实现于 Editor 程序集的普通类会被 BuildCommand 自动扫描；单个钩子异常记录警告后继续。</summary>
     public interface IBuildProgress
     {
-        /// <summary>构建开始前（BuildPlayer 调用之前）执行。</summary>
         void OnBeginBuild(BuildProgressContext context);
-
-        /// <summary>构建被取消 / 异常中断时执行。</summary>
         void OnCancelled(BuildProgressContext context);
-
-        /// <summary>构建结束后（成功或失败）执行。</summary>
         void OnFinishedBuild(BuildProgressContext context);
+    }
+
+    /// <summary>仅反馈详细进度，不决定构建开始、完成或成功。百分比为当前阶段进度。</summary>
+    public sealed class BuildProgressReporter : IDisposable
+    {
+        [Serializable]
+        private sealed class Message
+        {
+            public int version = 1;
+            public string stage;
+            // -1 表示当前阶段没有可靠百分比。
+            public float pct;
+        }
+
+        private static readonly Regex NativeStage = new Regex(@"DisplayProgressbar:\s*([^\r\n]+)");
+        private static readonly Regex NativeSteps = new Regex(@"\[(\d+)/(\d+)\s+\d+s\]");
+        private static readonly object Gate = new object();
+        private static string lastMessage;
+        private static bool active;
+        [ThreadStatic] private static bool emitting;
+
+        public BuildProgressReporter()
+        {
+            active = true;
+            lastMessage = null;
+            Progress.added += OnProgress;
+            Progress.updated += OnProgress;
+            // 同步 BuildPlayer 期间也能转发原生进度日志，不依赖 EditorApplication.update。
+            Application.logMessageReceivedThreaded += OnLog;
+            Report("准备构建…");
+        }
+
+        /// <summary>项目自定义构建步骤可调用；pct 为 0..100，省略时只更新阶段。</summary>
+        public static void Report(string stage, float pct = -1f)
+        {
+            if (!active || emitting || string.IsNullOrWhiteSpace(stage)) return;
+            if (float.IsNaN(pct) || float.IsInfinity(pct) || pct < 0f) pct = -1f;
+            else pct = Mathf.Clamp(pct, 0f, 100f);
+            lock (Gate)
+            {
+                string json = JsonUtility.ToJson(new Message { stage = stage, pct = pct });
+                if (json == lastMessage) return;
+                lastMessage = json;
+                emitting = true;
+                try { Debug.Log("[TBuildToolProgress] " + json); }
+                finally { emitting = false; }
+            }
+        }
+
+        private static void OnProgress(Progress.Item[] items)
+        {
+            if (items == null) return;
+            foreach (var item in items)
+            {
+                if (item == null || !item.running) continue;
+                string stage = string.IsNullOrEmpty(item.description) ? item.name : item.name + "：" + item.description;
+                Report(stage, item.indefinite ? -1f : item.progress * 100f);
+            }
+        }
+
+        private static void OnLog(string message, string stackTrace, LogType type)
+        {
+            if (emitting || string.IsNullOrEmpty(message) || message.Contains("[TBuildToolProgress]")) return;
+            var stage = NativeStage.Match(message);
+            if (stage.Success) Report(stage.Groups[1].Value.Trim());
+            var steps = NativeSteps.Match(message);
+            if (steps.Success && double.TryParse(steps.Groups[1].Value, out double done)
+                && double.TryParse(steps.Groups[2].Value, out double total) && total > 0)
+                Report("编译构建步骤 " + steps.Groups[1].Value + "/" + steps.Groups[2].Value, (float)(done / total * 100));
+        }
+
+        public void Dispose()
+        {
+            Progress.added -= OnProgress;
+            Progress.updated -= OnProgress;
+            Application.logMessageReceivedThreaded -= OnLog;
+            active = false;
+        }
     }
 
     /// <summary>IBuildProgress 阶段回调上下文。</summary>
     public struct BuildProgressContext
     {
-        /// <summary>Build Profile 资产路径（项目相对路径，如 Assets/Settings/Build Profiles/WallpaperAndroid.asset）。</summary>
         public string profilePath;
-
-        /// <summary>构建目标平台（BuildTarget）。</summary>
         public BuildTarget target;
-
-        /// <summary>输出路径（.apk / .exe）。</summary>
         public string outputPath;
-
-        /// <summary>本次构建是否被取消 / 异常中断（OnCancelled 阶段必为 true）。</summary>
         public bool cancelled;
-
-        /// <summary>本次构建是否成功（仅 OnFinishedBuild 阶段有意义）。</summary>
         public bool succeeded;
-
-        /// <summary>构建报告（OnBeginBuild 阶段为 null；异常中断时亦为 null）。</summary>
         public BuildReport report;
     }
 }
