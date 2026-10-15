@@ -1,6 +1,6 @@
 {
   "name": "com.unitybuildtool",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "displayName": "UnityBuildTool (Unity Plugin)",
   "description": "UnityBuildTool 工程内辅助插件：命令行打包入口（-executeMethod）+ IBuildProgress 构建进度钩子。可由外部打包工具（UnityBuildTool/web）调用，也可独立用于 CI。",
   "unity": "6000.0",

@@ -84,7 +84,9 @@ fn main() {
             );
             let allowed_origin = base_url.clone();
             WebviewWindowBuilder::new(app, "admin", WebviewUrl::External(admin_url.parse()?))
-                .title("管理端")
+                .title("UnityBuildTool 管理端")
+                // Native file-drop interception prevents HTML5 node dragging in WebView2.
+                .disable_drag_drop_handler()
                 .inner_size(800.0, 600.0)
                 .min_inner_size(640.0, 480.0)
                 .initialization_script(&init)

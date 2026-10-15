@@ -675,7 +675,7 @@ function cloneBuildNode(id) {
 }
 
 function moveBuildNodeToGroup(nodeId, targetGroupId, beforeNodeId) {
-  if (!buildNodeById(nodeId)) return;
+  if (!buildNodeById(nodeId) || nodeId === beforeNodeId) return;
   state.buildGroups.forEach(g => {
     g.nodeIds = (g.nodeIds || []).filter(x => String(x) !== String(nodeId));
   });
@@ -690,6 +690,11 @@ function moveBuildNodeToGroup(nodeId, targetGroupId, beforeNodeId) {
         g.nodeIds.push(nodeId);
       }
     }
+  } else if (beforeNodeId) {
+    const node = buildNodeById(nodeId);
+    state.buildNodes = state.buildNodes.filter(n => n.id !== nodeId);
+    const index = state.buildNodes.findIndex(n => n.id === beforeNodeId);
+    state.buildNodes.splice(index < 0 ? state.buildNodes.length : index, 0, node);
   }
   renderBuildGroups();
   scheduleSave();
@@ -1069,12 +1074,6 @@ function saveBuildNodeModal() {
     state.buildNodes.push(newNode);
     if (state.buildEditTargetGroupId) {
       const g = buildGroupById(state.buildEditTargetGroupId);
-      if (g) {
-        if (!Array.isArray(g.nodeIds)) g.nodeIds = [];
-        g.nodeIds.push(newId);
-      }
-    } else if (state.activeBuildGroupId && state.activeBuildGroupId !== "all") {
-      const g = buildGroupById(state.activeBuildGroupId);
       if (g) {
         if (!Array.isArray(g.nodeIds)) g.nodeIds = [];
         g.nodeIds.push(newId);
@@ -2310,12 +2309,12 @@ function initVcsDnD() {
     e.stopPropagation();
     t.classList.remove('drag-over');
     const groupId = t.id === 'vcsUngroupedCard' ? null : t.dataset.gid;
-    moveVcsNodeToGroup(state.vcsDragId, groupId);
+    moveVcsNodeToGroup(state.vcsDragId, groupId, e.target.closest('.vcs-node')?.dataset.nid);
   });
 }
 
-function moveVcsNodeToGroup(nodeId, groupId) {
-  if (!vcsNodeById(nodeId)) return;
+function moveVcsNodeToGroup(nodeId, groupId, beforeNodeId) {
+  if (!vcsNodeById(nodeId) || nodeId === beforeNodeId) return;
   // 成员关系是否已变化（拖回原处 / 未分组拖到未分组 = 无变化，不弹提示）
   const inGroup = vcsGroupOf(nodeId);
   const wasHere = groupId ? (inGroup && inGroup.id === groupId) : !inGroup;
@@ -2327,8 +2326,14 @@ function moveVcsNodeToGroup(nodeId, groupId) {
     const g = vcsGroupById(groupId);
     if (g) {
       g.nodeIds = g.nodeIds || [];
-      if (!g.nodeIds.some(x => String(x) === String(nodeId))) g.nodeIds.push(nodeId);
+      const index = g.nodeIds.indexOf(beforeNodeId);
+      g.nodeIds.splice(index < 0 ? g.nodeIds.length : index, 0, nodeId);
     }
+  } else if (beforeNodeId) {
+    const node = vcsNodeById(nodeId);
+    state.vcsNodes = state.vcsNodes.filter(n => n.id !== nodeId);
+    const index = state.vcsNodes.findIndex(n => n.id === beforeNodeId);
+    state.vcsNodes.splice(index < 0 ? state.vcsNodes.length : index, 0, node);
   }
   renderVcs();
   scheduleVcsSave();

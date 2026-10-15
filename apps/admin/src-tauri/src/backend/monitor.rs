@@ -39,7 +39,7 @@ impl Backend {
                 if ids.len() == before { break; }
             }
             let mut cpu = 0.0_f32; let mut memory = 0_u64; let mut read = 0_u64; let mut written = 0_u64; let mut count = 0;
-            for id in ids { if let Some(p) = system.process(id) { count += 1; cpu += p.cpu_usage(); memory += p.memory(); let disk = p.disk_usage(); read += disk.total_read_bytes; written += disk.total_written_bytes; } }
+            for id in ids { if let Some(p) = system.process(id) { count += 1; cpu += p.cpu_usage(); memory += process_memory::private_working_set(id.as_u32()).unwrap_or_else(|| p.memory()); let disk = p.disk_usage(); read += disk.total_read_bytes; written += disk.total_written_bytes; } }
             json!({"cpuPercent":cpu / std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f32,"memoryBytes":memory,"readBytes":read,"writtenBytes":written,"processCount":count})
         };
         let config = self.config();

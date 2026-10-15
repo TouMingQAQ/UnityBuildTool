@@ -1,6 +1,6 @@
 //! Embedded loopback HTTP service. No runtime Node.js or web asset files required.
 #[path = "download.rs"]
-mod download;
+pub(crate) mod download;
 use crate::backend::Backend;
 use serde_json::{json, Value};
 use std::{

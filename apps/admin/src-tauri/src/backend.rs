@@ -1,6 +1,7 @@
 mod build;
 mod check;
 mod projects;
+mod process_memory;
 mod monitor;
 #[cfg(test)]
 mod tests;
@@ -663,6 +664,19 @@ impl Backend {
                 Ok(json!({"ok":true}))
             }
             ("GET", "/api/outputs") => Ok(self.outputs()),
+            ("POST", "/api/artifacts/list") | ("POST", "/api/artifacts/open-folder") => {
+                let roots = crate::http::download::roots(&self.config(), &self.runtime_root);
+                let id = valstr(&body, "root");
+                let relative = valstr(&body, "path");
+                if path == "/api/artifacts/list" {
+                    return crate::http::download::listing(&roots, &id, &relative);
+                }
+                let root = crate::http::download::select(&roots, &id)?;
+                let (file, metadata) = crate::http::download::resolve(&root.directory, &relative)?;
+                let directory = if metadata.is_file() { file.parent().unwrap().to_path_buf() } else { file };
+                open::that(directory).map_err(|e| (500, e.to_string()))?;
+                Ok(json!({"ok":true}))
+            },
             ("POST", "/api/check/preview") => self.check_preview(&body),
             ("POST", "/api/check/start") => self.start_check(body),
             ("POST", "/api/ai/analyze") => self.ai_analyze(&body),

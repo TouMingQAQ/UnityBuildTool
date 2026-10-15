@@ -379,6 +379,33 @@ impl Backend {
 mod tests {
     use super::*;
     #[test]
+    fn artifact_browsing_is_project_scoped_and_rejects_escaping_paths() {
+        let t = tempfile::tempdir().unwrap();
+        for project in ["a", "b"] {
+            fs::create_dir_all(t.path().join(project).join("Builds/nested")).unwrap();
+            fs::write(t.path().join(project).join(format!("Builds/{project}.txt")), project).unwrap();
+        }
+        let root = Backend::new(t.path().join("config.json"), t.path().into());
+        root.save(json!({"schemaVersion":2,"projects":[
+            {"id":"a","slug":"a","projectPath":"a"},
+            {"id":"b","slug":"b","projectPath":"b"}
+        ]})).unwrap();
+        for project in ["a", "b"] {
+            let listing = root.handle_admin_project("POST", "/api/artifacts/list", json!({}), project).unwrap();
+            assert_eq!(listing["root"], "builds");
+            assert_eq!(listing["entries"].as_array().unwrap().len(), 2);
+            assert_eq!(listing["entries"][0]["type"], "directory");
+            assert_eq!(listing["entries"][1]["name"], format!("{project}.txt"));
+            let nested = root.handle_admin_project("POST", "/api/artifacts/list", json!({"root":"builds","path":"nested"}), project).unwrap();
+            assert_eq!(nested["path"], "nested");
+            assert!(nested["entries"].as_array().unwrap().is_empty());
+            for action in ["/api/artifacts/list", "/api/artifacts/open-folder"] {
+                assert_eq!(root.handle_admin_project("POST", action, json!({"root":"builds","path":"../../b"}), project).unwrap_err().0, 403);
+                assert_eq!(root.handle_admin_project("POST", action, json!({"root":"unknown"}), project).unwrap_err().0, 404);
+            }
+        }
+    }
+    #[test]
     fn migration_preserves_legacy_nodes_and_counters() {
         let root = migrate(
             json!({"projectPath":"A","lastVersionCode":12,"buildNodes":[{"id":"n"}],"ai":{"enabled":true}}),

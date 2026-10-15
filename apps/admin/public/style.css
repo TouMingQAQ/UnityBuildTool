@@ -1894,6 +1894,18 @@ body {
 .monitor-project-card small { display: block; margin-top: 10px; color: var(--text-muted); }
 .monitor-state { float: right; color: var(--accent-primary); }
 .monitor-metrics { padding: 12px; background: rgba(56, 189, 248, 0.06); border-radius: var(--radius-sm); line-height: 1.8; }
+.monitor-artifacts { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.monitor-artifact-heading, .monitor-artifact-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.monitor-artifact-heading { justify-content: space-between; }
+.monitor-artifact-heading h4 { margin: 8px 0; }
+.monitor-artifact-toolbar .input-select { flex: 1; min-width: 120px; }
+.monitor-artifact-path { color: var(--text-muted); overflow-wrap: anywhere; font-size: 12px; }
+.monitor-artifact-list { max-height: 320px; overflow-y: auto; }
+.monitor-artifact-entry { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); }
+.monitor-artifact-entry > div { min-width: 0; }
+.monitor-artifact-entry > button { flex-shrink: 0; }
+.monitor-artifact-name { display: block; text-align: left; overflow-wrap: anywhere; white-space: normal; color: var(--text-main); }
+.monitor-artifact-entry small { display: block; color: var(--text-muted); font-size: 11px; margin-top: 4px; }
 .monitor-website { margin-top: 16px; }
 .monitor-website > label { display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 600; }
 .monitor-website-row { display: flex; align-items: center; gap: 10px; }
