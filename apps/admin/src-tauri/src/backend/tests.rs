@@ -32,6 +32,41 @@ fn public_catalog_and_status_hide_secrets() {
     );
 }
 #[test]
+fn scan_falls_back_to_project_default_without_build_profiles() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("proj");
+    std::fs::create_dir_all(p.join("Assets")).unwrap();
+    std::fs::create_dir_all(p.join("ProjectSettings")).unwrap();
+    std::fs::write(
+        p.join("ProjectSettings/ProjectSettings.asset"),
+        "  productName: Demo\n  bundleVersion: 1.2.3\n  AndroidBundleVersionCode: 7\n",
+    )
+    .unwrap();
+    std::fs::write(
+        p.join("ProjectSettings/EditorBuildSettings.asset"),
+        "  m_Scenes:\n  - enabled: 1\n    path: \"Assets/A.unity\"\n  - enabled: 1\n    path: \"Assets/B.unity\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        p.join("ProjectSettings/ProjectVersion.txt"),
+        "m_EditorVersion: 2022.3.10f1\n",
+    )
+    .unwrap();
+    let b = Backend::new(t.path().join("config.json"), t.path().to_path_buf());
+    let r = b
+        .scan(&json!({"projectPath": p.to_string_lossy()}))
+        .unwrap();
+    let arr = r["profiles"].as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["target"], 0);
+    assert_eq!(arr[0]["fallback"], true);
+    assert_eq!(arr[0]["productName"], "Demo");
+    assert_eq!(arr[0]["bundleVersion"], "1.2.3");
+    assert_eq!(arr[0]["sceneCount"], 2);
+    assert_eq!(arr[0]["assetPath"], PROJECT_DEFAULT_PROFILE);
+}
+
+#[test]
 fn task_acquisition_is_exclusive() {
     let t = tempfile::tempdir().unwrap();
     let b = Backend::new(t.path().join("c"), t.path().into());

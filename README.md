@@ -28,6 +28,18 @@ npm run build:admin
 
 安装包位于 `apps/admin/src-tauri/target/release/bundle/nsis/`。配置保存至系统应用数据目录 `com.unitybuildtool.admin/config.json`，开发模式读取 `web/config.json`。
 
+### Android 工具目录
+
+「引擎与高级配置」页提供项目级的 **Android 工具目录（SDK / NDK / JDK）**：点击「自动扫描」会依次读取系统环境变量（`ANDROID_SDK_ROOT` / `ANDROID_NDK_ROOT` / `JAVA_HOME` 等）、Unity 编辑器偏好（注册表中的 Unity EditorPrefs）以及 Unity.exe 安装目录下的 `PlaybackEngines/AndroidPlayer`，三个路径均可直接手动修改。保存后构建时会作为环境变量注入 Unity 子进程。
+
+### 自动构建号
+
+「安卓构建号」填 `-1` 时自动 **+1 Unity 工程里的构建号**：Android 目标会读取对应 Build Profile 资产（无则读取 `ProjectSettings/ProjectSettings.asset`）中的 `AndroidBundleVersionCode` 并加一，构建成功后写回该工程文件；其它平台继续使用工具内的 `lastVersionCode` 计数。构建失败不递增。该值同时通过 `-versionCode` 传给 Unity 插件设置 `bundleVersionCode`。
+
+### 旧版 Unity（无 Build Profile）
+
+若扫描不到任何 Build Profile（Unity 2023 及更早），会自动读取工程自身配置生成一个「项目默认（跟随工程）」节点：产品名/版本取自 `ProjectSettings.asset`，场景数取自 `EditorBuildSettings.asset`。构建时不再传 `-profilePath`，由 Unity 插件使用经典 `BuildPipeline.BuildPlayer` 按工程当前激活目标与 Build Settings 场景列表构建，并把实际目标回传给工具用于归档命名。
+
 ## 用户端
 
 从托盘菜单选择“打开用户网页”，或在浏览器打开 Rust 服务显示的本机地址。网页首页保留星空、渐变、轨道与立方体动效，点击进入工作台。当前无用户登录流程。

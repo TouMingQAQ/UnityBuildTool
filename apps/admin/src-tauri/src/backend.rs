@@ -27,12 +27,89 @@ const TARGETS: &[(i64, &str)] = &[
     (9, "iOS"),
     (4, "macOS"),
 ];
+/// 旧版 Unity 没有 Build Profile 时使用的“项目默认配置”占位标识。
+const PROJECT_DEFAULT_PROFILE: &str = "__project_default__";
 fn target_name(t: i64) -> String {
     TARGETS
         .iter()
         .find(|x| x.0 == t)
         .map(|x| x.1.to_string())
         .unwrap_or_else(|| format!("BuildTarget {t}"))
+}
+/// 读取 Windows 上 Unity EditorPrefs 里的 Android SDK / NDK / JDK 路径。
+/// Unity 会把同一项按编辑器版本哈希成 `AndroidSdkRoot_h....` 之类的键，值为 UTF-8 的 REG_BINARY。
+#[cfg(windows)]
+fn unity_editor_pref_android_paths() -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut sdk = Vec::new();
+    let mut ndk = Vec::new();
+    let mut jdk = Vec::new();
+    let out = Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Unity Technologies\Unity Editor 5.x",
+        ])
+        .output();
+    let stdout = match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return (sdk, ndk, jdk),
+    };
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some((left, right)) = line.split_once("REG_BINARY") else {
+            continue;
+        };
+        let name = left.split_whitespace().next().unwrap_or("");
+        let hex: String = right.split_whitespace().collect();
+        let mut bytes = Vec::new();
+        let mut i = 0;
+        while i + 2 <= hex.len() {
+            if let Ok(b) = u8::from_str_radix(&hex[i..i + 2], 16) {
+                bytes.push(b);
+            }
+            i += 2;
+        }
+        let val = String::from_utf8_lossy(&bytes)
+            .trim_end_matches('\u{0}')
+            .trim()
+            .to_string();
+        if val.is_empty() {
+            continue;
+        }
+        if name.starts_with("AndroidSdkRoot") {
+            sdk.push(val);
+        } else if name.starts_with("AndroidNdkRoot") {
+            ndk.push(val);
+        } else if name.starts_with("JdkPath") {
+            jdk.push(val);
+        }
+    }
+    (sdk, ndk, jdk)
+}
+
+#[cfg(not(windows))]
+fn unity_editor_pref_android_paths() -> (Vec<String>, Vec<String>, Vec<String>) {
+    (Vec::new(), Vec::new(), Vec::new())
+}
+
+fn dedup_paths(values: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for x in values {
+        let key = x.trim().to_string();
+        if !key.is_empty() && seen.insert(key.to_lowercase()) {
+            out.push(key);
+        }
+    }
+    out
+}
+
+fn first_existing(paths: &[String]) -> Value {
+    paths
+        .iter()
+        .find(|p| Path::new(p).is_dir())
+        .cloned()
+        .map(|s| json!(s))
+        .unwrap_or(Value::Null)
 }
 fn valstr(v: &Value, k: &str) -> String {
     v[k].as_str().unwrap_or("").to_owned()
@@ -234,6 +311,27 @@ impl Backend {
             .stderr(Stdio::piped())
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "Never");
+        // 项目级 Android 工具目录：注入到子进程环境，使构建真正使用配置的 SDK / NDK / JDK。
+        let tool_cfg = self.config();
+        if let Some(tools) = tool_cfg.get("androidTools").and_then(Value::as_object) {
+            let mappings: [(&str, &[&str]); 3] = [
+                ("sdk", &["ANDROID_SDK_ROOT", "ANDROID_HOME"]),
+                ("ndk", &["ANDROID_NDK_ROOT", "ANDROID_NDK_HOME"]),
+                ("jdk", &["JAVA_HOME"]),
+            ];
+            for (key, env_names) in mappings {
+                if let Some(p) = tools
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    for n in env_names {
+                        cmd.env(n, p);
+                    }
+                }
+            }
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -521,6 +619,42 @@ impl Backend {
             }
             profiles.push(json!({"name":field("m_Name").unwrap_or_else(||f.file_stem().unwrap_or_default().to_string_lossy().into()),"target":target,"targetName":target_name(target),"assetPath":f.strip_prefix(&p).unwrap_or(&f).to_string_lossy().replace('\\',"/"),"absPath":f,"sceneCount":t.matches("m_path:").count(),"bundleVersion":field("bundleVersion"),"productName":field("productName"),"subtarget":field("m_Subtarget").and_then(|s|s.parse::<i64>().ok()).unwrap_or(0),"keystoreName":field("AndroidKeystoreName"),"keyaliasName":field("AndroidKeyaliasName"),"useCustomKeystore":field("androidUseCustomKeystore").as_deref()==Some("1")}));
         }
+        if profiles.is_empty() {
+            // 旧版 Unity Editor（无 Build Profile）：读取工程自身配置作为默认构建条目。
+            let ps = fs::read_to_string(p.join("ProjectSettings/ProjectSettings.asset"))
+                .unwrap_or_default();
+            let ps_field = |name: &str| {
+                ps.lines().find_map(|l| {
+                    l.trim()
+                        .strip_prefix(&format!("{name}:"))
+                        .map(|v| v.trim().trim_matches('"').to_string())
+                })
+            };
+            let scene_count = fs::read_to_string(p.join("ProjectSettings/EditorBuildSettings.asset"))
+                .map(|t| t.lines().filter(|l| l.trim_start().starts_with("path:")).count())
+                .unwrap_or(0);
+            let product = ps_field("productName").unwrap_or_default();
+            let name = if product.trim().is_empty() {
+                "项目默认配置".to_string()
+            } else {
+                product.clone()
+            };
+            profiles.push(json!({
+                "name": name,
+                "target": 0,
+                "targetName": "项目默认（跟随工程）",
+                "assetPath": PROJECT_DEFAULT_PROFILE,
+                "absPath": "",
+                "sceneCount": scene_count,
+                "bundleVersion": ps_field("bundleVersion"),
+                "productName": product,
+                "subtarget": 0,
+                "keystoreName": ps_field("AndroidKeystoreName"),
+                "keyaliasName": ps_field("AndroidKeyaliasName"),
+                "useCustomKeystore": ps_field("androidUseCustomKeystore").as_deref() == Some("1"),
+                "fallback": true,
+            }));
+        }
         let ver = fs::read_to_string(p.join("ProjectSettings/ProjectVersion.txt"))
             .unwrap_or_default()
             .lines()
@@ -549,6 +683,85 @@ impl Backend {
             }
         }
         json!({"exes":ex,"cli":"unity"})
+    }
+    /// 自动扫描目标工程可用的 Android SDK / NDK / JDK 工具目录。
+    /// 来源：系统环境变量 → Unity 编辑器偏好（注册表）→ 由 Unity.exe 安装目录推导。
+    fn scan_android_tools(&self, b: &Value) -> Result<Value, Fault> {
+        let cfg = self.config();
+        let mut sdk: Vec<String> = Vec::new();
+        let mut ndk: Vec<String> = Vec::new();
+        let mut jdk: Vec<String> = Vec::new();
+        let mut sources = serde_json::Map::new();
+        for k in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
+            if let Ok(v) = std::env::var(k) {
+                if !v.trim().is_empty() {
+                    sources.insert(format!("env:{k}"), json!(v.trim()));
+                    sdk.push(v);
+                }
+            }
+        }
+        for k in ["ANDROID_NDK_ROOT", "ANDROID_NDK_HOME"] {
+            if let Ok(v) = std::env::var(k) {
+                if !v.trim().is_empty() {
+                    sources.insert(format!("env:{k}"), json!(v.trim()));
+                    ndk.push(v);
+                }
+            }
+        }
+        for k in ["JAVA_HOME", "JDK_HOME"] {
+            if let Ok(v) = std::env::var(k) {
+                if !v.trim().is_empty() {
+                    sources.insert(format!("env:{k}"), json!(v.trim()));
+                    jdk.push(v);
+                }
+            }
+        }
+        let (pref_sdk, pref_ndk, pref_jdk) = unity_editor_pref_android_paths();
+        if !pref_sdk.is_empty() || !pref_ndk.is_empty() || !pref_jdk.is_empty() {
+            sources.insert("unityEditorPrefs".into(), json!(true));
+            sdk.extend(pref_sdk);
+            ndk.extend(pref_ndk);
+            jdk.extend(pref_jdk);
+        }
+        // 由 Unity 安装目录推导 PlaybackEngines/AndroidPlayer 下的 SDK / NDK / OpenJDK
+        let exe = {
+            let from_body = valstr(b, "unityExe");
+            if from_body.trim().is_empty() {
+                valstr(&cfg["engine"], "unityExe")
+            } else {
+                from_body
+            }
+        };
+        if !exe.trim().is_empty() {
+            if let Some(editor_dir) = PathBuf::from(exe.trim()).parent() {
+                let player = editor_dir.join("Data/PlaybackEngines/AndroidPlayer");
+                if player.is_dir() {
+                    sources.insert("unityPlaybackEngines".into(), json!(player));
+                    sdk.push(player.join("SDK").to_string_lossy().into_owned());
+                    ndk.push(player.join("NDK").to_string_lossy().into_owned());
+                    jdk.push(player.join("OpenJDK").to_string_lossy().into_owned());
+                }
+            }
+        }
+        let sdk = dedup_paths(sdk);
+        let ndk = dedup_paths(ndk);
+        let jdk = dedup_paths(jdk);
+        let sdk_pick = first_existing(&sdk);
+        let ndk_pick = first_existing(&ndk);
+        let jdk_pick = first_existing(&jdk);
+        Ok(json!({
+            "ok": true,
+            "sdk": sdk_pick,
+            "ndk": ndk_pick,
+            "jdk": jdk_pick,
+            "exists": {
+                "sdk": !sdk_pick.is_null(),
+                "ndk": !ndk_pick.is_null(),
+                "jdk": !jdk_pick.is_null(),
+            },
+            "candidates": {"sdk": sdk, "ndk": ndk, "jdk": jdk},
+            "sources": Value::Object(sources),
+        }))
     }
     fn vcs_nodes(&self, b: &Value) -> Vec<Value> {
         if let Some(nodes) = b["nodes"].as_array() {
@@ -654,6 +867,7 @@ impl Backend {
                 Ok(json!({"ok":true,"config":self.config()}))
             }
             ("GET", "/api/unity-detect") => Ok(self.detect()),
+            ("POST", "/api/android-tools/scan") => self.scan_android_tools(&body),
             ("POST", "/api/scan") => self.scan(&body),
             ("POST", "/api/build/preview") => self.preview(&body),
             ("POST", "/api/build/start") => self.start_build(body),

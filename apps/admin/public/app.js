@@ -264,6 +264,11 @@ function collectConfig() {
       apiKey: $('aiApiKey').value.trim(),
     },
     buildNumber: $('buildNumber').value.trim() || "-1",
+    androidTools: {
+      sdk: $('androidSdk')?.value.trim() ?? "",
+      ndk: $('androidNdk')?.value.trim() ?? "",
+      jdk: $('androidJdk')?.value.trim() ?? "",
+    },
     profileConfigs: state.profileConfigs,
     buildNodes: state.buildNodes,
     buildGroups: state.buildGroups,
@@ -469,6 +474,10 @@ function fillForm(cfg) {
   $('aiModel').value = ai.model || "deepseek-chat";
   $('aiApiKey').value = ai.apiKey || "";
   $('buildNumber').value = cfg.buildNumber != null ? cfg.buildNumber : "-1";
+  const at = cfg.androidTools || {};
+  if ($('androidSdk')) $('androidSdk').value = at.sdk || "";
+  if ($('androidNdk')) $('androidNdk').value = at.ndk || "";
+  if ($('androidJdk')) $('androidJdk').value = at.jdk || "";
   state.profileConfigs = (cfg.profileConfigs && typeof cfg.profileConfigs === "object") ? cfg.profileConfigs : {};
 
   // 环境编译检测配置恢复
@@ -594,11 +603,12 @@ async function doScan() {
     syncBuildNodesWithProfiles();
     const ver = r.unityVersion ? r.unityVersion : "（未识别）";
     const isU6 = r.unityVersion && r.unityVersion.startsWith("6000");
+    const fallback = (r.profiles || []).some(p => p.fallback);
     setInfo(
-      `✓ 项目路径: ${r.projectAbs}\n✓ Unity 版本: ${ver}${isU6 ? " (Unity 6)" : "  ⚠ 非 6000.x，可能不是 Unity 6"} | 发现有效 Profile: ${r.profiles.length} 个`,
-      isU6 ? "ok" : ""
+      `✓ 项目路径: ${r.projectAbs}\n✓ Unity 版本: ${ver}${isU6 ? " (Unity 6)" : ""} | 发现有效 Profile: ${r.profiles.length} 个${fallback ? "（旧版 Unity 无 Build Profile，已使用项目默认配置）" : ""}`,
+      fallback || isU6 ? "ok" : ""
     );
-    showToast(`扫描成功，发现 ${r.profiles.length} 个 Profile`, "ok");
+    showToast(fallback ? "未发现 Build Profile，已按工程默认配置生成节点" : `扫描成功，发现 ${r.profiles.length} 个 Profile`, "ok");
     const ig = (r.ignored || []);
     if ($('ignoredInfo')) {
       $('ignoredInfo').textContent = ig.length
@@ -704,6 +714,7 @@ function renderBuildNodeCard(n) {
   const isAndroid = n.target === 13;
   const isIOS = n.target === 9;
   const isWin = n.target === 19 || n.target === 5;
+  const androidCapable = isAndroid || n.target === 0;
   const badgeClass = isAndroid ? "android" : isIOS ? "ios" : isWin ? "win" : "default";
   const targetLabel = n.targetName || (isAndroid ? "Android" : isIOS ? "iOS" : isWin ? "Windows" : "未指定");
 
@@ -711,14 +722,14 @@ function renderBuildNodeCard(n) {
   const isAddr = n.buildAddressables != null ? n.buildAddressables : $('defaultBuildAddressables')?.checked;
   const isAutoZip = n.autoZip != null ? n.autoZip : $('defaultAutoZip')?.checked;
   const isShared = !!n.customBuildDir;
-  const isSigned = isAndroid && (n.keystoreName || n.keystorePass);
+  const isSigned = androidCapable && (n.keystoreName || n.keystorePass);
   const bkind = n.androidBuildKind || $('defaultAndroidBuildKind')?.value || "apk";
 
   const tags = [];
   if (isDev) tags.push(`<span class="tag-badge dev" title="DEV 调试包">DEV</span>`);
   if (isAddr) tags.push(`<span class="tag-badge addr" title="构建 Addressables">Addr</span>`);
-  if (isAndroid && bkind === "aab") tags.push(`<span class="tag-badge aab" title="构建 AAB（.aab Google Play 分包��">AAB</span>`);
-  if (isAndroid && bkind === "gradleProject") tags.push(`<span class="tag-badge asproj" title="导出 Android Studio 工程">AS工程</span>`);
+  if (androidCapable && bkind === "aab") tags.push(`<span class="tag-badge aab" title="构建 AAB（.aab Google Play 分包）">AAB</span>`);
+  if (androidCapable && bkind === "gradleProject") tags.push(`<span class="tag-badge asproj" title="导出 Android Studio 工程">AS工程</span>`);
   if (isAutoZip === false) tags.push(`<span class="tag-badge nozip" title="保留原始目录直接运行（不压缩为ZIP）">不压缩</span>`);
   if (isShared) tags.push(`<span class="tag-badge shared" title="共享/自定义缓存目录: ${esc(n.customBuildDir)}">缓存</span>`);
   if (isSigned) tags.push(`<span class="tag-badge signed" title="签名已配置">签名</span>`);
@@ -727,7 +738,9 @@ function renderBuildNodeCard(n) {
     tags.push(`<span class="tag-badge vcs" title="构建前自动更新版本管理分组：${esc(gNames)}">⬆ ${esc(gNames || "更新分组")}</span>`);
   }
 
-  const profileDisplay = n.profileAssetPath || "（未关联 Profile，请点 ⚙ 配置选择）";
+  const profileDisplay = n.profileAssetPath === "__project_default__"
+    ? "项目默认（跟随工程 Build Settings）"
+    : (n.profileAssetPath || "（未关联 Profile，请点 ⚙ 配置选择）");
 
   return `<div class="build-node" draggable="true" data-bnid="${esc(n.id)}" title="拖动 ⠿ 手柄将节点归入分组或调整顺序">
     <span class="build-drag" title="拖动归组/排序">⠿</span>
@@ -918,8 +931,11 @@ function updateModalPlatformUI() {
   const isAndroid = target === 13;
   const isIOS = target === 9;
   const isWin = target === 19 || target === 5;
+  const isDefault = target === 0;
+  // 项目默认节点（旧版 Unity 无 Profile）也允许配置 Android 构建目标与签名。
+  const androidCapable = isAndroid || isDefault;
 
-  $('pcAndroidBox').classList.toggle("hidden", !isAndroid);
+  $('pcAndroidBox').classList.toggle("hidden", !androidCapable);
   $('pcIosBox').classList.toggle("hidden", !isIOS);
   $('pcWinBox').classList.toggle("hidden", !isWin);
 
@@ -937,7 +953,9 @@ function updateModalPlatformUI() {
     }
   }
 
-  if (isAndroid) {
+  if (isDefault) {
+    $('pcHint').textContent = "💡 项目默认（旧版 Unity 无 Build Profile）：构建时跟随工程当前激活平台，使用 Build Settings 中的启用场景列表。若目标是 Android，可在下方选择 APK/AAB/导出 AS 工程并填写 keystore 签名。";
+  } else if (isAndroid) {
     $('pcHint').textContent = "💡 安卓平台：Keystore 文件与别名已可从 Profile 自动填充，填入密码即可。构建目标默认为「" + ($('pcBuildKind')?.value || "APK") + "」（APK / AAB / 导出 Android Studio 工程）。";
   } else if (isIOS) {
     $('pcHint').textContent = "💡 iOS 平台：导出 Xcode 工程后将自动打包压缩为 ZIP 归档。";
@@ -1021,7 +1039,7 @@ function onProfileSelectChange() {
     if (!$('pcNodeName').value.trim() || $('pcNodeName').value === "新建打包节点") {
       $('pcNodeName').value = p.name;
     }
-    if (p.target === 13) {
+    if (p.target === 13 || p.target === 0) {
       if (p.keystoreName && !$('pcKeystoreName').value.trim()) $('pcKeystoreName').value = p.keystoreName;
       if (p.keyaliasName && (!$('pcAlias').value.trim() || $('pcAlias').value === "key")) $('pcAlias').value = p.keyaliasName;
     }
@@ -1039,6 +1057,8 @@ function saveBuildNodeModal() {
   const p = state.profiles.find(x => x.assetPath === assetPath);
   const target = p ? p.target : 19;
   const isAndroid = target === 13;
+  // 项目默认节点（target 0，旧版 Unity 无 Build Profile）同样可配置 Android 构建目标与签名。
+  const androidCapable = isAndroid || target === 0;
 
   const nodeData = {
     name: nodeName || (p ? p.name : "打包节点"),
@@ -1055,12 +1075,12 @@ function saveBuildNodeModal() {
     dev: $('pcDev').checked,
     buildAddressables: $('pcBuildAddressables').checked,
     addressablesMethod: $('pcAddressablesMethod').value.trim(),
-    androidBuildKind: isAndroid ? $('pcBuildKind').value : "",
-    keystoreName: isAndroid ? $('pcKeystoreName').value.trim() : "",
-    keyaliasName: isAndroid ? $('pcAlias').value.trim() : "",
-    keystorePass: isAndroid ? $('pcPass').value : "",
-    keyaliasPass: isAndroid ? $('pcKeyPass').value : "",
-    remember: isAndroid ? $('pcRemember').checked : false,
+    androidBuildKind: androidCapable ? $('pcBuildKind').value : "",
+    keystoreName: androidCapable ? $('pcKeystoreName').value.trim() : "",
+    keyaliasName: androidCapable ? $('pcAlias').value.trim() : "",
+    keystorePass: androidCapable ? $('pcPass').value : "",
+    keyaliasPass: androidCapable ? $('pcKeyPass').value : "",
+    remember: androidCapable ? $('pcRemember').checked : false,
     vcsGroupIds: $('pcVcsEnabled').checked ? state.pcVcsGroups.slice() : [],
   };
 
@@ -1254,6 +1274,30 @@ async function doCliOpen() {
     showToast('已通过 Unity CLI 打开项目', 'ok');
   } catch (e) {
     setInfo('打开失败：' + e.message, 'err');
+  }
+}
+
+/* ─────────────── Android 工具目录扫描（SDK / NDK / JDK） ─────────────── */
+async function doScanAndroidTools() {
+  const btn = $('btnScanAndroidTools');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/android-tools/scan', {
+      projectPath: $('projectPath').value.trim(),
+      unityExe: $('unityExe').value.trim(),
+    });
+    const missing = [];
+    if (r.sdk) $('androidSdk').value = r.sdk; else missing.push('SDK');
+    if (r.ndk) $('androidNdk').value = r.ndk; else missing.push('NDK');
+    if (r.jdk) $('androidJdk').value = r.jdk; else missing.push('JDK');
+    scheduleSave();
+    if (missing.length === 3) showToast('未自动找到 Android 工具目录，请手动填写', 'err');
+    else if (missing.length) showToast(`已填充，未找到：${missing.join(' / ')}`, 'info');
+    else showToast('已自动扫描并填充 Android 工具目录', 'ok');
+  } catch (e) {
+    showToast('扫描 Android 工具目录失败：' + e.message, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -2809,6 +2853,16 @@ async function init() {
   $('btnDetect').onclick = doDetect;
   $('btnCliProbe').onclick = doCliProbe;
   $('btnCliOpen').onclick = doCliOpen;
+  if ($('btnScanAndroidTools')) $('btnScanAndroidTools').onclick = doScanAndroidTools;
+  [['btnOpenAndroidSdk', 'androidSdk'], ['btnOpenAndroidNdk', 'androidNdk'], ['btnOpenAndroidJdk', 'androidJdk']].forEach(([btnId, inputId]) => {
+    const b = $(btnId);
+    if (!b) return;
+    b.onclick = () => {
+      const p = $(inputId)?.value.trim();
+      if (!p) { showToast('请先填写目录路径', 'err'); return; }
+      openFolder(p);
+    };
+  });
   $('btnPreview').onclick = doPreview;
   $('btnStart').onclick = doStart;
   $('btnStop').onclick = doStop;
@@ -2908,7 +2962,7 @@ async function init() {
   });
 
   // 9. 表单输入自动暂存
-  ['projectPath', 'profileDir', 'unityExe', 'cliPath', 'template', 'artifactNameTemplate', 'outputBase', 'successDir', 'buildNumber', 'proxyHost', 'proxyPort', 'aiBaseUrl', 'aiModel', 'aiApiKey', 'checkProjectPath', 'checkUnityExe', 'checkTimeout'].forEach(id => {
+  ['projectPath', 'profileDir', 'unityExe', 'cliPath', 'template', 'artifactNameTemplate', 'outputBase', 'successDir', 'buildNumber', 'androidSdk', 'androidNdk', 'androidJdk', 'proxyHost', 'proxyPort', 'aiBaseUrl', 'aiModel', 'aiApiKey', 'checkProjectPath', 'checkUnityExe', 'checkTimeout'].forEach(id => {
     const el = $(id);
     if (el) el.oninput = scheduleSave;
   });

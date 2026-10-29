@@ -70,21 +70,22 @@ New-Item -ItemType Junction -Path "D:\UnityProject\Miside\Assets\UnityBuildTool"
 
 ## 命令行用法（外部工具 / CI 调用）
 
-构建（每条命令一个 Profile）：
+构建（每条命令一个 Profile；旧版 Unity 可省略 `-profilePath`，按工程默认配置构建）：
 
 ```
 Unity.exe -batchmode -nographics -quit \
   -projectPath <项目路径> \
   -executeMethod TBuildTool.Editor.BuildCommand.Build \
-  -profilePath Assets/Settings/Build Profiles/WallpaperAndroid.asset \
+  [-profilePath Assets/Settings/Build Profiles/WallpaperAndroid.asset] \  # 可选：Unity 6+ Build Profile
   -outputDirectory <输出目录> \
+  [-wallpaperTarget 13|19|5|9] \                 # 可选：不传则用工程当前激活目标（旧版 Unity 走此路径）
   [-androidBuildKind apk|aab|gradleProject] \   # 安卓构建目标（默认 apk；gradleProject = 导出 Android Studio 工程）
   [-keystoreName KeyStore/user.keystore] [-keystoreAlias key] \
-  [-keystorePass <密码>] [-keyaliasPass <密码>] \
+  [-keystorePass <密码>] [-keyaliasPass <密码>] [-versionCode <构建号>] \
   -logFile <日志路径>
 ```
 
-后端仅传入 `-outputDirectory`。插件激活 Build Profile 后，读取生效的 `PlayerSettings.productName`，按目标平台生成文件名；成功后在输出目录写入 `build-result.json`，包含实际产物绝对路径 `outputPath`、产品名称 `productName` 和版本 `version`。后端据此验证和归档，APK/AAB 保留原文件名。已有 CI 仍可使用 `-outputPath` 指定完整路径。
+不传 `-profilePath` 时（Unity 2023 及更早无 Build Profile），插件使用经典 `BuildPipeline.BuildPlayer`，场景取自工程 `EditorBuildSettings`，目标取自 `-wallpaperTarget` 或当前激活目标。后端仅传入 `-outputDirectory`；成功后插件在输出目录写入 `build-result.json`，包含实际产物绝对路径 `outputPath`、产品名称 `productName`、版本 `version`、解析后的 `target`/`targetName` 与 `versionCode`。后端据此验证和归档，APK/AAB 保留原文件名。已有 CI 仍可使用 `-outputPath` 指定完整路径。
 
 自定义命令模板中的 `{output}` 是输出目录；模板调用插件时应使用 `-outputDirectory "{output}"`。其他构建工具也须在此目录写入同样结构的 `build-result.json`，否则后端会将本次构建标记为失败，避免误用历史文件。
 

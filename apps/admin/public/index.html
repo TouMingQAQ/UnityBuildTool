@@ -581,8 +581,8 @@
                   <input type="text" id="successDir" class="input-text input-sm" placeholder="构建成功">
                 </div>
                 <div class="field-group" style="flex: 0.8;">
-                  <label for="buildNumber" class="field-label-sm">安卓构建号</label>
-                  <input type="text" id="buildNumber" class="input-text input-sm" placeholder="-1 (-1自增)">
+                  <label for="buildNumber" class="field-label-sm" title="填 -1 时自动在 Unity 工程里的 AndroidBundleVersionCode 基础上 +1，并写回工程文件">安卓构建号</label>
+                  <input type="text" id="buildNumber" class="input-text input-sm" placeholder="-1（自动 +Unity 工程版本号）">
                 </div>
               </div>
 
@@ -617,6 +617,57 @@
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Android 工具目录（SDK / NDK / JDK） -->
+        <div class="card glass-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+              <h3>Android 工具目录（SDK / NDK / JDK）</h3>
+            </div>
+            <div class="card-actions">
+              <button id="btnScanAndroidTools" class="btn btn-primary btn-sm" title="从系统环境变量 / Unity 编辑器偏好自动扫描">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                自动扫描
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="field-grid">
+              <div class="field-group full">
+                <label for="androidSdk" class="field-label">
+                  <span>Android SDK 目录</span>
+                  <span class="label-hint">（环境变量 ANDROID_SDK_ROOT / ANDROID_HOME，Unity PlaybackEngines/AndroidPlayer/SDK）</span>
+                </label>
+                <div class="input-action-wrap">
+                  <input type="text" id="androidSdk" class="input-text" placeholder="例如 G:\Java\SDK">
+                  <button id="btnOpenAndroidSdk" class="btn btn-ghost btn-sm" title="在资源管理器中打开">打开目录</button>
+                </div>
+              </div>
+              <div class="field-group full">
+                <label for="androidNdk" class="field-label">
+                  <span>Android NDK 目录</span>
+                  <span class="label-hint">（环境变量 ANDROID_NDK_ROOT / ANDROID_NDK_HOME，Unity PlaybackEngines/AndroidPlayer/NDK）</span>
+                </label>
+                <div class="input-action-wrap">
+                  <input type="text" id="androidNdk" class="input-text" placeholder="例如 G:\Java\NDK\android-ndk-r27c">
+                  <button id="btnOpenAndroidNdk" class="btn btn-ghost btn-sm" title="在资源管理器中打开">打开目录</button>
+                </div>
+              </div>
+              <div class="field-group full">
+                <label for="androidJdk" class="field-label">
+                  <span>Android JDK 目录</span>
+                  <span class="label-hint">（环境变量 JAVA_HOME / JDK_HOME，Unity PlaybackEngines/AndroidPlayer/OpenJDK）</span>
+                </label>
+                <div class="input-action-wrap">
+                  <input type="text" id="androidJdk" class="input-text" placeholder="例如 G:\Java\jdk-17">
+                  <button id="btnOpenAndroidJdk" class="btn btn-ghost btn-sm" title="在资源管理器中打开">打开目录</button>
+                </div>
+              </div>
+            </div>
+            <span class="hint-text">「自动扫描」依次读取系统环境变量（ANDROID_SDK_ROOT / ANDROID_NDK_ROOT / JAVA_HOME 等）、Unity 编辑器偏好（注册表）与 Unity.exe 安装目录下的 PlaybackEngines/AndroidPlayer。扫描结果可直接手动修改，保存后构建时会作为环境变量注入 Unity 进程。</span>
           </div>
         </div>
 

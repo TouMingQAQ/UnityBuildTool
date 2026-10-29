@@ -58,6 +58,47 @@ fn path_at(root: &Path, raw: &str) -> PathBuf {
         root.join(p)
     }
 }
+/// 是否为“旧版 Unity 无 Build Profile”时的项目默认占位节点。
+fn is_default_profile(asset_path: &str) -> bool {
+    asset_path.is_empty() || asset_path == super::PROJECT_DEFAULT_PROFILE
+}
+/// 从 ProjectSettings.asset 或 Build Profile 资产中读取 Android 构建号。
+fn read_android_version_code(path: &Path) -> Option<i64> {
+    let t = fs::read_to_string(path).ok()?;
+    let re = regex::Regex::new(r"AndroidBundleVersionCode:\s*(\d+)").ok()?;
+    re.captures(&t)?.get(1)?.as_str().parse().ok()
+}
+/// 把自增后的 Android 构建号写回 Unity 工程文件（保留其余内容）。
+fn write_android_version_code(path: &Path, no: i64) -> Result<(), String> {
+    let t = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let re =
+        regex::Regex::new(r"(AndroidBundleVersionCode:\s*)(\d+)").map_err(|e| e.to_string())?;
+    if !re.is_match(&t) {
+        return Err(format!(
+            "{} 中未找到 AndroidBundleVersionCode 字段",
+            path.display()
+        ));
+    }
+    let replaced = re
+        .replacen(&t, 1, format!("${{1}}{no}").as_str())
+        .to_string();
+    fs::write(path, replaced).map_err(|e| e.to_string())
+}
+/// 版本号来源文件：优先使用该节点关联的 Build Profile 资产（其中的 PlayerSettings 覆盖块），
+/// 否则回退到工程的 ProjectSettings/ProjectSettings.asset。
+fn version_code_source(project: &Path, asset_path: &str) -> PathBuf {
+    if !is_default_profile(asset_path) {
+        let p = path_at(project, asset_path);
+        if p.is_file() && read_android_version_code(&p).is_some() {
+            return p;
+        }
+    }
+    project.join("ProjectSettings").join("ProjectSettings.asset")
+}
+/// 当前 Unity 工程里的 Android 构建号（无则按 0 起算）。
+fn android_base_version_code(project: &Path, asset_path: &str) -> i64 {
+    read_android_version_code(&version_code_source(project, asset_path)).unwrap_or(0)
+}
 fn quote(x: &str) -> String {
     format!("\"{}\"", x.replace('"', "\\\""))
 }
@@ -157,7 +198,7 @@ impl Context {
         if text(&p, "targetName").is_empty() {
             p["targetName"] = json!(super::target_name(number(&p["target"]).unwrap_or(19)));
         }
-        if text(&p, "absPath").is_empty() {
+        if text(&p, "absPath").is_empty() && !is_default_profile(text(&p, "assetPath")) {
             p["absPath"] = json!(path_at(&project, text(&p, "assetPath")));
         }
         let kind = text(&p, "androidBuildKind").to_ascii_lowercase();
@@ -210,6 +251,8 @@ impl Context {
             text(p, "addressablesMethod")
         };
         let kind = text(p, "androidBuildKind");
+        // 目标 0 表示“跟随 Unity 工程当前激活平台”，按 Android 可能性一并注入签名/构建号参数（插件会按实际目标判断）。
+        let android_like = target == 13 || target == 0;
         if text(engine, "mode") == "template" {
             let mut t = string(engine, "template");
             let pairs = [
@@ -223,8 +266,8 @@ impl Context {
                 ),
                 ("{unityExe}", string(engine, "unityExe")),
                 ("{project}", self.project.to_string_lossy().into_owned()),
-                ("{profilePath}", string(p, "assetPath")),
-                ("{profileAbs}", string(p, "absPath")),
+                ("{profilePath}", if is_default_profile(text(p, "assetPath")) { String::new() } else { string(p, "assetPath") }),
+                ("{profileAbs}", if is_default_profile(text(p, "assetPath")) { String::new() } else { string(p, "absPath") }),
                 ("{profileName}", string(p, "name")),
                 ("{target}", string(p, "targetName")),
                 ("{output}", self.output.to_string_lossy().into_owned()),
@@ -251,7 +294,7 @@ impl Context {
                 ("{keyaliasPass}", string(sign, "keyaliasPass")),
                 (
                     "{androidBuildKind}",
-                    if target == 13 && kind != "apk" {
+                    if android_like && kind != "apk" {
                         format!("-androidBuildKind {kind}")
                     } else {
                         String::new()
@@ -259,7 +302,7 @@ impl Context {
                 ),
                 (
                     "{versionCode}",
-                    if target == 13 {
+                    if android_like {
                         self.no.to_string()
                     } else {
                         String::new()
@@ -285,12 +328,19 @@ impl Context {
             self.project.to_string_lossy().into_owned(),
             "-executeMethod".into(),
             "TBuildTool.Editor.BuildCommand.Build".into(),
-            "-profilePath".into(),
-            string(p, "assetPath"),
+        ]);
+        // 旧版 Unity 无 Build Profile：不传 -profilePath / -wallpaperTarget，由插件按工程当前激活目标构建。
+        if !is_default_profile(text(p, "assetPath")) {
+            args.extend(["-profilePath".into(), string(p, "assetPath")]);
+        }
+        args.extend([
             "-outputDirectory".into(),
             self.output.to_string_lossy().into_owned(),
-            "-wallpaperTarget".into(),
-            target.to_string(),
+        ]);
+        if target > 0 {
+            args.extend(["-wallpaperTarget".into(), target.to_string()]);
+        }
+        args.extend([
             "-logFile".into(),
             self.log.to_string_lossy().into_owned(),
         ]);
@@ -300,7 +350,7 @@ impl Context {
         if address {
             args.extend(["-buildAddressables".into(), method.into()])
         }
-        if target == 13 {
+        if android_like {
             for (k, flag) in [
                 ("keystoreName", "-keystoreName"),
                 ("keyaliasName", "-keystoreAlias"),
@@ -641,20 +691,42 @@ impl super::Backend {
     pub(super) fn preview(&self, body: &Value) -> Result<Value, Fault> {
         let engine = body.get("engine").cloned().unwrap_or(json!({}));
         let cfg = self.config();
-        let no = number(&body["buildNumber"])
+        let auto = number(&body["buildNumber"]).map(|n| n < 0).unwrap_or(true);
+        let fixed = number(&body["buildNumber"])
             .filter(|n| *n >= 0)
-            .unwrap_or_else(|| number(&cfg["lastVersionCode"]).unwrap_or(0) + 1);
+            .unwrap_or(1);
+        let project = self.resolve(text(body, "projectPath"));
+        let mut version_codes: std::collections::HashMap<PathBuf, i64> =
+            std::collections::HashMap::new();
         let mut items = Vec::new();
         for pr in body["profiles"].as_array().cloned().unwrap_or_default() {
-            if text(&pr, "assetPath").is_empty() {
+            let asset = text(&pr, "assetPath");
+            if asset.is_empty() {
                 continue;
             }
+            let target = number(&pr["target"]).unwrap_or(0);
+            let no = if auto {
+                if target == 13 || target == 0 {
+                    let src = version_code_source(&project, asset);
+                    let cur = version_codes
+                        .get(&src)
+                        .copied()
+                        .unwrap_or_else(|| read_android_version_code(&src).unwrap_or(0));
+                    let next = cur + 1;
+                    version_codes.insert(src, next);
+                    next
+                } else {
+                    number(&cfg["lastVersionCode"]).unwrap_or(0) + 1
+                }
+            } else {
+                fixed
+            };
             let c = Context::new(self, body, &pr, no);
             let (_, _, display) = c.command(&engine).map_err(|e| (400, e))?;
             let (nodes, groups) =
                 group_nodes(body.get("_configSnapshot").unwrap_or(&cfg), body, &pr);
             let p = &c.profile;
-            items.push(json!({"name":p["name"],"target":p["targetName"],"output":c.output,"logFile":c.log,"command":display,"versionCode":if number(&p["target"])==Some(13){json!(no)}else{Value::Null},"buildNo":no,"dev":p["dev"],"buildAddressables":p["buildAddressables"],"androidBuildKind":p["androidBuildKind"],"autoZip":p["autoZip"],"customBuildDir":p["customBuildDir"],"previewName":c.artifact_name(true),"archiveDir":c.base.join(&c.success).join(format!("{}-<时间戳>",safe(text(p,"name")))),"vcsBeforeBuild":{"enabled":!nodes.is_empty(),"groups":groups,"nodeCount":nodes.len(),"nodeNames":nodes.iter().map(|n|choose(&[n["name"].clone(),n["id"].clone()])).collect::<Vec<_>>()}}));
+            items.push(json!({"name":p["name"],"target":p["targetName"],"output":c.output,"logFile":c.log,"command":display,"versionCode":if matches!(number(&p["target"]),Some(13)|Some(0)){json!(no)}else{Value::Null},"buildNo":no,"dev":p["dev"],"buildAddressables":p["buildAddressables"],"androidBuildKind":p["androidBuildKind"],"autoZip":p["autoZip"],"customBuildDir":p["customBuildDir"],"previewName":c.artifact_name(true),"archiveDir":c.base.join(&c.success).join(format!("{}-<时间戳>",safe(text(p,"name")))),"vcsBeforeBuild":{"enabled":!nodes.is_empty(),"groups":groups,"nodeCount":nodes.len(),"nodeNames":nodes.iter().map(|n|choose(&[n["name"].clone(),n["id"].clone()])).collect::<Vec<_>>()}}));
         }
         Ok(json!({"ok":true,"items":items,"engine":engine}))
     }
@@ -740,8 +812,12 @@ impl super::Backend {
         let auto = number(&body["buildNumber"]).map(|n| n < 0).unwrap_or(true);
         let fixed = number(&body["buildNumber"]).unwrap_or(1);
         let stop = body["stopOnError"] != false;
+        let project = self.resolve(text(body, "projectPath"));
         let mut any_failed = false;
-        if profiles.iter().any(|p| number(&p["target"]) == Some(13)) {
+        if profiles
+            .iter()
+            .any(|p| matches!(number(&p["target"]), Some(13) | Some(0)))
+        {
             if let Err(e) = self.gradle_proxy(body) {
                 self.emit(json!({"type":"notice","text":format!("[代理] Gradle 配置失败: {e}")}));
             }
@@ -763,8 +839,13 @@ impl super::Backend {
                 }
                 continue;
             }
+            let target_hint = number(&pr["target"]).unwrap_or(0);
             let no = if auto {
-                number(&self.config()["lastVersionCode"]).unwrap_or(0) + 1
+                if target_hint == 13 || target_hint == 0 {
+                    android_base_version_code(&project, text(pr, "assetPath")) + 1
+                } else {
+                    number(&self.config()["lastVersionCode"]).unwrap_or(0) + 1
+                }
             } else {
                 fixed
             };
@@ -784,14 +865,22 @@ impl super::Backend {
                     j["lastFail"] = json!({"name":pr["name"],"targetName":c.profile["targetName"],"logFile":c.log,"output":c.output,"exitCode":exit});
                 }
             }
-            self.emit(json!({"type":"profile-end","index":index,"ok":ok,"exitCode":exit,"versionCode":if number(&pr["target"])==Some(13){json!(no)}else{Value::Null},"buildNo":no}));
+            self.emit(json!({"type":"profile-end","index":index,"ok":ok,"exitCode":exit,"versionCode":if matches!(number(&pr["target"]),Some(13)|Some(0)){json!(no)}else{Value::Null},"buildNo":no}));
             match result {
                 Ok(out) => {
-                    let mut cfg = self.config();
-                    cfg["lastVersionCode"] = json!(no);
-
-                    if let Err(e) = self.save(cfg) {
-                        self.build_line(index, &format!("[警告] 构建号保存失败: {e}"));
+                    let actual_target = number(&out["target"]).unwrap_or(target_hint);
+                    if auto && actual_target == 13 {
+                        // 自动构建号：自增并写回 Unity 工程里的 AndroidBundleVersionCode。
+                        let src = version_code_source(&project, text(pr, "assetPath"));
+                        if let Err(e) = write_android_version_code(&src, no) {
+                            self.build_line(index, &format!("[警告] 构建号写回 Unity 工程失败: {e}"));
+                        }
+                    } else {
+                        let mut cfg = self.config();
+                        cfg["lastVersionCode"] = json!(no);
+                        if let Err(e) = self.save(cfg) {
+                            self.build_line(index, &format!("[警告] 构建号保存失败: {e}"));
+                        }
                     }
                     self.job.lock().unwrap()["outputs"]
                         .as_array_mut()
@@ -1028,11 +1117,25 @@ impl super::Backend {
         let mut resolved = c.profile.clone();
         resolved["productName"] = result["productName"].clone();
         resolved["bundleVersion"] = result["version"].clone();
+        // 无 Build Profile（旧版 Unity）时目标未知，用插件回报的实际目标回填。
+        let profile_target = number(&c.profile["target"]).unwrap_or(0);
+        let result_target = number(&result["target"]).unwrap_or(0);
+        let target = if profile_target > 0 {
+            profile_target
+        } else if result_target > 0 {
+            result_target
+        } else {
+            19
+        };
+        resolved["target"] = json!(target);
+        if profile_target == 0 && !text(&result, "targetName").is_empty() {
+            resolved["targetName"] = result["targetName"].clone();
+        }
+        let resolved_target_name = text(&resolved, "targetName").to_string();
         let name = archive_name(&resolved, c.no, false);
-        let target = number(&c.profile["target"]).unwrap_or(19);
         let kind = text(&c.profile, "androidBuildKind");
         let android_file = target == 13 && matches!(kind, "apk" | "aab");
-        let mut info=format!("Profile: {}\nTarget: {}\nProduct: {}\nVersion: {}\nBuildNumber: {}\nDEV: {}\nDate: {}\nDuration: {}s\nSourceDir: {}\n",text(&c.profile,"name"),text(&c.profile,"targetName"),text(&result,"productName"),text(&result,"version"),c.no,c.profile["dev"]==true,now.format("%Y-%m-%d %H:%M:%S"),duration.as_secs(),c.dir.display());
+        let mut info=format!("Profile: {}\nTarget: {}\nProduct: {}\nVersion: {}\nBuildNumber: {}\nDEV: {}\nDate: {}\nDuration: {}s\nSourceDir: {}\n",text(&resolved,"name"),resolved_target_name,text(&result,"productName"),text(&result,"version"),c.no,c.profile["dev"]==true,now.format("%Y-%m-%d %H:%M:%S"),duration.as_secs(),c.dir.display());
         fs::write(c.dir.join("build-info.txt"), &info).map_err(|e| e.to_string())?;
         let file = if android_file {
             let dst = final_dir.join(output.file_name().ok_or("产物没有文件名")?);
@@ -1057,6 +1160,8 @@ impl super::Backend {
         fs::write(final_dir.join("build-info.txt"), &info).map_err(|e| e.to_string())?;
         let mut out = output_record(&file, &final_dir, &read_info(&final_dir));
         out["time"] = json!(now.timestamp_millis());
+        out["target"] = json!(target);
+        out["targetName"] = json!(resolved_target_name);
         out["kind"] = json!(if android_file {
             "apk"
         } else if target == 9 {
@@ -1140,6 +1245,46 @@ impl super::Backend {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn android_version_code_reads_and_writes_profile_and_project() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("ProjectSettings")).unwrap();
+        let ps = root.path().join("ProjectSettings/ProjectSettings.asset");
+        fs::write(
+            &ps,
+            "  productName: Game\n  AndroidBundleVersionCode: 1\n  bundleVersion: 1.0\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("Assets/Settings/Build Profiles")).unwrap();
+        let profile = root
+            .path()
+            .join("Assets/Settings/Build Profiles/Android.asset");
+        fs::write(
+            &profile,
+            "  m_PlayerSettingsYaml:\n    m_Settings:\n    - line: '|   AndroidBundleVersionCode: 4'\n",
+        )
+        .unwrap();
+        assert_eq!(read_android_version_code(&ps), Some(1));
+        let rel = "Assets/Settings/Build Profiles/Android.asset";
+        assert_eq!(android_base_version_code(root.path(), rel), 4);
+        // 有 Profile 时优先读写 Profile 资产内的 PlayerSettings 覆盖块。
+        let src = version_code_source(root.path(), rel);
+        assert_eq!(src, profile);
+        write_android_version_code(&src, 5).unwrap();
+        assert_eq!(read_android_version_code(&src), Some(5));
+        assert!(fs::read_to_string(&src).unwrap().contains("m_Settings"));
+        // 无 Profile（项目默认占位）时回退到 ProjectSettings.asset。
+        assert_eq!(
+            version_code_source(root.path(), super::super::PROJECT_DEFAULT_PROFILE),
+            ps
+        );
+        write_android_version_code(&ps, 2).unwrap();
+        assert_eq!(read_android_version_code(&ps), Some(2));
+        assert!(fs::read_to_string(&ps)
+            .unwrap()
+            .contains("AndroidBundleVersionCode: 2"));
+    }
 
     #[test]
     fn template_parser_preserves_quoted_arguments_and_rejects_unclosed_quotes() {

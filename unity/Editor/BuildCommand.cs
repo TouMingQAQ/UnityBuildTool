@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using UnityEditor;
+#if UNITY_6000_0_OR_NEWER
 using UnityEditor.Build.Profile;
+#endif
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
@@ -17,7 +19,7 @@ namespace TBuildTool.Editor
     ///   Unity.exe -batchmode -nographics -quit \
     ///     -projectPath <项目路径> \
     ///     -executeMethod TBuildTool.Editor.BuildCommand.Build \
-    ///     -profilePath Assets/Settings/Build Profiles/WallpaperAndroid.asset \
+    ///     [-profilePath Assets/Settings/Build Profiles/Xxx.asset] \ （可选；Unity 6+ 用 Build Profile，旧版未传时按工程默认配置构建）
     ///     -outputDirectory <输出目录> \
     ///     [-wallpaperTarget 13] \                     （可选，13=Android, 19=Win64, 5=Win86, 9=iOS）
     ///     [-dev true] \                               （可选，开启 Development Build）
@@ -48,30 +50,47 @@ namespace TBuildTool.Editor
             string addrArg       = GetArg(args, "-buildAddressables") ?? GetArg(args, "-addressables");
             string androidKind   = GetArg(args, "-androidBuildKind");
 
-            if (string.IsNullOrEmpty(profilePath) || string.IsNullOrEmpty(outputPath))
+            if (string.IsNullOrEmpty(outputPath))
             {
-                Debug.LogError("[TBuildTool] 缺少 -profilePath / -outputDirectory（或兼容参数 -outputPath），无法构建。");
+                Debug.LogError("[TBuildTool] 缺少 -outputDirectory（或兼容参数 -outputPath），无法构建。");
                 EditorApplication.Exit(1);
                 return;
             }
 
-            BuildProgressReporter.Report("加载 Build Profile");
-            var profile = AssetDatabase.LoadAssetAtPath<BuildProfile>(profilePath);
-            if (profile == null)
+            // 有 Build Profile（Unity 6+）时走 Profile 构建；否则（旧版 Unity 无 Profile）走经典 BuildPipeline，
+            // 默认读取工程自身配置（EditorBuildSettings 场景 + 当前激活目标）。
+            bool useProfile = false;
+#if UNITY_6000_0_OR_NEWER
+            useProfile = !string.IsNullOrEmpty(profilePath);
+#endif
+            if (!string.IsNullOrEmpty(profilePath) && !useProfile)
             {
-                Debug.LogError("[TBuildTool] 找不到 Build Profile: " + profilePath);
+                Debug.LogError("[TBuildTool] 当前 Unity 版本不支持 Build Profile，请清空 -profilePath 后按工程默认配置构建。");
                 EditorApplication.Exit(1);
                 return;
             }
-
-            // 先激活 Profile，避免批处理/CI 下出现 "Build profile is invalid" 问题
-            try { BuildProfile.SetActiveBuildProfile(profile); }
-            catch (Exception e)
+#if UNITY_6000_0_OR_NEWER
+            BuildProfile profile = null;
+            if (useProfile)
             {
-                Debug.LogError("[TBuildTool] 激活 Profile 失败: " + e.Message);
-                EditorApplication.Exit(1);
-                return;
+                BuildProgressReporter.Report("加载 Build Profile");
+                profile = AssetDatabase.LoadAssetAtPath<BuildProfile>(profilePath);
+                if (profile == null)
+                {
+                    Debug.LogError("[TBuildTool] 找不到 Build Profile: " + profilePath);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+                // 先激活 Profile，避免批处理/CI 下出现 "Build profile is invalid" 问题
+                try { BuildProfile.SetActiveBuildProfile(profile); }
+                catch (Exception e)
+                {
+                    Debug.LogError("[TBuildTool] 激活 Profile 失败: " + e.Message);
+                    EditorApplication.Exit(1);
+                    return;
+                }
             }
+#endif
 
             // 目标平台：优先用显式传入的 -wallpaperTarget（数字或名称），否则取当前激活目标。
             BuildTarget target = EditorUserBuildSettings.activeBuildTarget;
@@ -156,19 +175,52 @@ namespace TBuildTool.Editor
             BuildProgressReporter.Report("执行构建前项目步骤");
             InvokeBuildProgress(hooks, context, h => h.OnBeginBuild(context), "OnBeginBuild");
 
-            Debug.Log($"[TBuildTool] 开始构建 profile=\"{profile.name}\" target={target} (Options={buildOptions})");
+#if UNITY_6000_0_OR_NEWER
+            string buildLabel = useProfile ? ("profile=\"" + (profile != null ? profile.name : "") + "\"") : "工程默认配置（经典 BuildPipeline）";
+#else
+            string buildLabel = "工程默认配置（经典 BuildPipeline）";
+#endif
+            Debug.Log($"[TBuildTool] 开始构建 {buildLabel} target={target} (Options={buildOptions})");
             Debug.Log($"[TBuildTool] 输出目标路径: {outputFilePath}");
 
             BuildReport report = null;
             try
             {
                 BuildProgressReporter.Report("构建 Player");
-                report = BuildPipeline.BuildPlayer(new BuildPlayerWithProfileOptions
+#if UNITY_6000_0_OR_NEWER
+                if (useProfile)
                 {
-                    buildProfile = profile,
-                    locationPathName = outputFilePath,
-                    options = buildOptions,
-                });
+                    report = BuildPipeline.BuildPlayer(new BuildPlayerWithProfileOptions
+                    {
+                        buildProfile = profile,
+                        locationPathName = outputFilePath,
+                        options = buildOptions,
+                    });
+                }
+                else
+#endif
+                {
+                    // 旧版 Unity（无 Build Profile）：使用工程自身的 Build Settings 场景列表与目标平台。
+                    var scenes = new List<string>();
+                    foreach (var s in EditorBuildSettings.scenes)
+                    {
+                        if (s != null && s.enabled && !string.IsNullOrEmpty(s.path))
+                            scenes.Add(s.path);
+                    }
+                    if (scenes.Count == 0)
+                    {
+                        Debug.LogError("[TBuildTool] 工程 EditorBuildSettings 中没有启用的场景，无法构建。");
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                    report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+                    {
+                        scenes = scenes.ToArray(),
+                        locationPathName = outputFilePath,
+                        target = target,
+                        options = buildOptions,
+                    });
+                }
             }
             catch (Exception e)
             {
@@ -202,6 +254,9 @@ namespace TBuildTool.Editor
                         outputPath = Path.GetFullPath(report.summary.outputPath),
                         productName = PlayerSettings.productName,
                         version = PlayerSettings.bundleVersion,
+                        target = (int)target,
+                        targetName = TargetDisplayName(target),
+                        versionCode = target == BuildTarget.Android ? PlayerSettings.Android.bundleVersionCode : 0,
                     };
                     File.WriteAllText(Path.Combine(outputDirectory, "build-result.json"), JsonUtility.ToJson(result));
                 }
@@ -221,9 +276,25 @@ namespace TBuildTool.Editor
             public string outputPath;
             public string productName;
             public string version;
+            public int target;
+            public string targetName;
+            public int versionCode;
         }
 
         // Called after activating the Profile and applying platform settings.
+        private static string TargetDisplayName(BuildTarget target)
+        {
+            switch (target)
+            {
+                case BuildTarget.StandaloneWindows: return "Windows (x86)";
+                case BuildTarget.StandaloneWindows64: return "Windows (x64)";
+                case BuildTarget.Android: return "Android";
+                case BuildTarget.iOS: return "iOS";
+                case BuildTarget.StandaloneOSX: return "macOS";
+                default: return target.ToString();
+            }
+        }
+
         private static string ResolveOutputPath(string directory, BuildTarget target)
         {
             string name = PlayerSettings.productName;
