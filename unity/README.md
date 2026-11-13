@@ -16,6 +16,7 @@
   退出码 0=通过/不支持、1=失败、2=超时/异常。
 - `Editor/BuildProgress.cs` — 构建进度钩子接口 `IBuildProgress`（+ 上下文 `BuildProgressContext`）：
   `OnBeginBuild`（构建前）/ `OnCancelled`（取消·异常）/ `OnFinishedBuild`（成功·失败）。
+- `Editor/ApplicationPaths.cs` — 自动采集当前 Profile 的 `Application.dataPath`、`streamingAssetsPath`、`persistentDataPath`、`temporaryCachePath`、`consoleLogPath`，写入工程 `.buildtool/application-paths.json`，供管理端快捷打开。兼容没有 Build Profile 的旧版 Unity。采集值属于本机 Editor，非目标设备上的 Player 路径。
 
 ## 构建进度钩子（IBuildProgress）
 
@@ -59,7 +60,7 @@ New-Item -ItemType Junction -Path "D:\UnityProject\Miside\Assets\UnityBuildTool"
 
 ### 2. 拷贝安装（跨机器 / 无联接权限）
 
-将 `Editor/` 文件夹（BuildCommand.cs / CompileCheck.cs / BuildProgress.cs）
+将完整 `Editor/` 文件夹（包括 ApplicationPaths.cs）
 拷贝到项目 `Assets/UnityBuildTool/Editor/`。
 
 ### 3. UPM 包引用（可选）

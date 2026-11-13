@@ -4,6 +4,7 @@ mod projects;
 mod process_memory;
 mod monitor;
 mod paths;
+mod profile_settings;
 #[cfg(test)]
 mod tests;
 mod vcs;
@@ -592,6 +593,8 @@ impl Backend {
             }
         }
         let mut files = vec![];
+        let project_settings = fs::read_to_string(p.join("ProjectSettings/ProjectSettings.asset"))
+            .unwrap_or_default();
         let custom = valstr(b, "profileDir");
         walk(&p.join("Assets/Settings/Build Profiles"), &mut files);
         if !custom.is_empty() {
@@ -618,7 +621,8 @@ impl Backend {
             if !TARGETS.iter().any(|v| v.0 == target) {
                 continue;
             }
-            profiles.push(json!({"name":field("m_Name").unwrap_or_else(||f.file_stem().unwrap_or_default().to_string_lossy().into()),"target":target,"targetName":target_name(target),"assetPath":f.strip_prefix(&p).unwrap_or(&f).to_string_lossy().replace('\\',"/"),"absPath":f,"sceneCount":t.matches("m_path:").count(),"bundleVersion":field("bundleVersion"),"productName":field("productName"),"subtarget":field("m_Subtarget").and_then(|s|s.parse::<i64>().ok()).unwrap_or(0),"keystoreName":field("AndroidKeystoreName"),"keyaliasName":field("AndroidKeyaliasName"),"useCustomKeystore":field("androidUseCustomKeystore").as_deref()==Some("1")}));
+            let settings = profile_settings::describe(&t, &project_settings, false);
+            profiles.push(json!({"name":field("m_Name").unwrap_or_else(||f.file_stem().unwrap_or_default().to_string_lossy().into()),"target":target,"targetName":target_name(target),"assetPath":f.strip_prefix(&p).unwrap_or(&f).to_string_lossy().replace('\\',"/"),"absPath":f,"sceneCount":t.matches("m_path:").count(),"bundleVersion":settings["bundleVersion"],"productName":settings["productName"],"companyName":settings["companyName"],"subtarget":field("m_Subtarget").and_then(|s|s.parse::<i64>().ok()).unwrap_or(0),"keystoreName":field("AndroidKeystoreName"),"keyaliasName":field("AndroidKeyaliasName"),"useCustomKeystore":field("androidUseCustomKeystore").as_deref()==Some("1")}));
         }
         if profiles.is_empty() {
             // 旧版 Unity Editor（无 Build Profile）：读取工程自身配置作为默认构建条目。
@@ -634,7 +638,8 @@ impl Backend {
             let scene_count = fs::read_to_string(p.join("ProjectSettings/EditorBuildSettings.asset"))
                 .map(|t| t.lines().filter(|l| l.trim_start().starts_with("path:")).count())
                 .unwrap_or(0);
-            let product = ps_field("productName").unwrap_or_default();
+            let settings = profile_settings::describe(&ps, &ps, true);
+            let product = valstr(&settings, "productName");
             let name = if product.trim().is_empty() {
                 "项目默认配置".to_string()
             } else {
@@ -647,8 +652,9 @@ impl Backend {
                 "assetPath": PROJECT_DEFAULT_PROFILE,
                 "absPath": "",
                 "sceneCount": scene_count,
-                "bundleVersion": ps_field("bundleVersion"),
+                "bundleVersion": settings["bundleVersion"],
                 "productName": product,
+                "companyName": settings["companyName"],
                 "subtarget": 0,
                 "keystoreName": ps_field("AndroidKeystoreName"),
                 "keyaliasName": ps_field("AndroidKeyaliasName"),
@@ -879,8 +885,12 @@ impl Backend {
                 Ok(json!({"ok":true}))
             }
             ("GET", "/api/outputs") => Ok(self.outputs()),
+            ("POST", "/api/profile-settings/read") => self.profile_settings_read(&body),
+            ("POST", "/api/profile-settings/write") => self.profile_settings_write(&body),
             ("GET", "/api/project-paths") => Ok(self.project_paths()),
             ("POST", "/api/project-paths/open") => self.open_project_path(&valstr(&body, "id")),
+            ("POST", "/api/application-paths/read") => self.application_paths(&body),
+            ("POST", "/api/application-paths/open") => self.open_application_path(&body),
             ("POST", "/api/artifacts/list") | ("POST", "/api/artifacts/open-folder") => {
                 let roots = crate::http::download::roots(&self.config(), &self.runtime_root);
                 let id = valstr(&body, "root");

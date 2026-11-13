@@ -92,6 +92,8 @@ namespace TBuildTool.Editor
             }
 #endif
 
+            ApplicationPaths.Capture();
+
             // 目标平台：优先用显式传入的 -wallpaperTarget（数字或名称），否则取当前激活目标。
             BuildTarget target = EditorUserBuildSettings.activeBuildTarget;
             string btArg = GetArg(args, "-wallpaperTarget");

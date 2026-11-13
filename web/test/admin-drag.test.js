@@ -37,7 +37,7 @@ for (const kind of ['build', 'vcs']) {
 test('new build nodes only join the explicitly selected group', () => {
   const fields = new Proxy({}, {get:(_,id) => ({value:id==='pcProfileSelect'?'profile':'',checked:false,classList:{add(){}}})});
   const state = {profiles:[], buildNodes:[], buildGroups:[{id:'g',nodeIds:[]}], activeBuildGroupId:'g',pcVcsGroups:[]};
-  const context = {state,$:id=>fields[id],generateId:()=>`node${state.buildNodes.length}`,buildGroupById:id=>state.buildGroups.find(g=>g.id===id),showToast(){},renderBuildGroups(){},scheduleSave(){}};
+  const context = {state,playerSettingsRequest:0,playerSettings:null,$:id=>fields[id],generateId:()=>`node${state.buildNodes.length}`,buildGroupById:id=>state.buildGroups.find(g=>g.id===id),showToast(){},renderBuildGroups(){},scheduleSave(){}};
   const save = load('saveBuildNodeModal',context);
   save();
   assert.equal(state.buildNodes.length,1);

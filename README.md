@@ -40,6 +40,8 @@ npm run build:admin
 
 若扫描不到任何 Build Profile（Unity 2023 及更早），会自动读取工程自身配置生成一个「项目默认（跟随工程）」节点：产品名/版本取自 `ProjectSettings.asset`，场景数取自 `EditorBuildSettings.asset`。构建时不再传 `-profilePath`，由 Unity 插件使用经典 `BuildPipeline.BuildPlayer` 按工程当前激活目标与 Build Settings 场景列表构建，并把实际目标回传给工具用于归档命名。
 
+节点配置中的 **Player Settings** 支持读取和修改项目名（Product Name）、公司名（Company Name）和版本（Version）。点击“保存到文件”直接写入选中的 Build Profile 资产；没有 Build Profile 的旧版 Unity 则写入工程的 `ProjectSettings/ProjectSettings.asset`。Unity 6 Profile 尚未启用独立设置且具有标准空覆盖块时，会将完整工程 Player Settings 复制到该 Profile，再写入修改值。界面显示实际写入路径；“重新读取”可刷新 Unity 中已修改的数据。文件发生外部变更时会拒绝覆盖，需先重新读取；构建、检测或仓库任务期间禁止写入。
+
 ## 用户端
 
 从托盘菜单选择“打开用户网页”，或在浏览器打开 Rust 服务显示的本机地址。网页首页保留星空、渐变、轨道与立方体动效，点击进入工作台。当前无用户登录流程。
@@ -64,7 +66,7 @@ http://127.0.0.1:50345/p/server
 
 旧的单项目配置会迁移为默认项目；迁移前保留配置备份。删除项目配置不删除工程与产物文件。默认链接仅供本机访问。
 
-首页的项目详情和“设置 → 项目管理”提供快捷打开目录：工程根目录、Assets、ProjectSettings、Packages、Profile、构建输出、成功归档、环境检测结果，以及已配置的仓库与自定义构建目录。完整路径可选中复制；未生成的目录会标记并禁用打开按钮，生成后点击“刷新路径”即可。
+首页的项目详情和“设置 → 项目管理”提供 Unity `Application` 路径：`dataPath`、`streamingAssetsPath`、`persistentDataPath`、`temporaryCachePath` 和 `consoleLogPath`。可选择 Profile，显示完整路径、来源与采集时间；未生成或未采集的目录禁用打开按钮。工程内安装 `ApplicationPaths.cs` 后，打开 Unity 会自动采集当前 Profile 在本机 Editor 中的实际值，构建时也会刷新；旧版 Unity 使用工程默认配置。没有采集值时，Assets 和 StreamingAssets 按工程路径解析，Windows 的持久化目录按公司名与产品名预估，临时缓存路径等待 Unity 采集。显示的是本机 Editor 路径，手机和其他平台 Player 路径需在对应运行环境获取。
 
 ## 验证
 

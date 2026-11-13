@@ -818,6 +818,17 @@
           <div id="pcProfileDetailsInfo" class="vcs-probe-result" style="margin-top: -4px;"></div>
         </div>
 
+        <div class="modal-section-title">Player Settings</div>
+        <div class="field-grid">
+          <div class="field-row">
+            <div class="field-group"><label for="pcProductName" class="field-label">项目名（Product Name）</label><input id="pcProductName" class="input-text" type="text" maxlength="256"></div>
+            <div class="field-group"><label for="pcCompanyName" class="field-label">公司名（Company Name）</label><input id="pcCompanyName" class="input-text" type="text" maxlength="256"></div>
+            <div class="field-group"><label for="pcBundleVersion" class="field-label">版本（Version）</label><input id="pcBundleVersion" class="input-text" type="text" maxlength="256"></div>
+          </div>
+          <div id="pcPlayerSettingsInfo" class="field-hint" role="status"></div>
+          <div class="card-actions"><button type="button" id="pcPlayerReload" class="btn btn-ghost btn-sm">重新读取</button><button type="button" id="pcPlayerSave" class="btn btn-primary btn-sm" disabled>保存到文件</button></div>
+        </div>
+
         <!-- 基础通用定制 -->
         <div class="modal-section-title">📁 缓存与成品命名定制</div>
         <div class="field-grid">

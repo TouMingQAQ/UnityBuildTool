@@ -220,6 +220,7 @@ function syncBuildNodesWithProfiles() {
       n.target = p.target;
       n.targetName = p.targetName;
       n.productName = p.productName;
+      n.companyName = p.companyName;
       n.bundleVersion = p.bundleVersion;
       n.sceneCount = p.sceneCount;
       n.absPath = p.absPath;
@@ -348,20 +349,20 @@ function renderProjects() {
   renderProjectPaths($('settingsProjectPaths'), state.activeProjectId);
 }
 
-async function renderProjectPaths(host, projectId) {
+async function renderProjectPaths(host, projectId, assetPath = '') {
   const request = (host.pathRequest || 0) + 1;
   host.pathRequest = request;
-  host.innerHTML = '<h4>快捷打开目录</h4><p role="status">正在读取路径…</p>';
-  if (!projectId) { host.innerHTML = '<h4>快捷打开目录</h4><p class="field-hint">请先选择项目。</p>'; return; }
-  const route = '/api/project-paths?project=' + encodeURIComponent(projectId);
+  host.innerHTML = '<h4>Application 路径</h4><p role="status">正在读取路径…</p>';
+  if (!projectId) { host.innerHTML = '<h4>Application 路径</h4><p class="field-hint">请先选择项目。</p>'; return; }
   try {
-    const data = await api(route, undefined, true);
+    const data = await api('/api/application-paths/read?project=' + encodeURIComponent(projectId), {assetPath}, true);
     if (host.pathRequest !== request) return;
-    host.innerHTML = `<div class="project-paths-heading"><h4>快捷打开目录</h4><button type="button" class="btn btn-ghost btn-xs" data-path-refresh>刷新路径</button></div><div class="project-path-list">${data.paths.map((entry, i) => `<div class="project-path-entry"><div><strong>${esc(entry.name)}</strong><span class="project-path-value">${esc(entry.path)}</span>${entry.exists ? '' : '<small>目录尚未生成或已移除</small>'}</div><button type="button" class="btn btn-ghost btn-xs" data-project-path="${i}" ${entry.exists ? '' : 'disabled'}>打开</button></div>`).join('') || '<p class="field-hint">请先配置工程路径或仓库路径。</p>'}</div>`;
+    host.innerHTML = `<div class="project-paths-heading"><h4>Application 路径</h4><button type="button" class="btn btn-ghost btn-xs" data-path-refresh>刷新路径</button></div><select class="input-select" data-path-profile aria-label="Application 路径所属 Profile">${data.profiles.map(p=>`<option value="${esc(p.assetPath)}" ${p.assetPath===data.assetPath?'selected':''}>${esc(p.name)}</option>`).join('')}</select><p class="field-hint">${esc(data.context || '')}${data.capturedAt ? ' · 采集于 '+esc(new Date(data.capturedAt).toLocaleString()) : ''}</p><div class="project-path-list">${data.paths.map((entry, i) => `<div class="project-path-entry"><div><strong>${esc(entry.name)}</strong><span class="project-path-value">${esc(entry.path || '等待 Unity 采集')}</span><small>${esc(entry.source || '')}${entry.note?' · '+esc(entry.note):''}</small>${entry.exists ? '' : '<small>目录尚未生成、已移除或未采集</small>'}</div><button type="button" class="btn btn-ghost btn-xs" data-project-path="${i}" ${entry.exists ? '' : 'disabled'}>${entry.file?'打开所在目录':'打开'}</button></div>`).join('') || '<p class="field-hint">请先配置 Unity 工程路径。</p>'}</div>`;
+    host.querySelector('[data-path-profile]').onchange = e => renderProjectPaths(host,projectId,e.target.value);
     host.querySelector('[data-path-refresh]').onclick = async () => {
       try {
         if (projectId === state.activeProjectId) await flushProjectSaves();
-        if (host.pathRequest === request) renderProjectPaths(host, projectId);
+        if (host.pathRequest === request) renderProjectPaths(host, projectId, data.assetPath);
       } catch (e) { showToast(e.message, 'err'); }
     };
     host.querySelectorAll('[data-project-path]').forEach(button => {
@@ -369,7 +370,7 @@ async function renderProjectPaths(host, projectId) {
         button.disabled = true;
         try {
           const entry = data.paths[Number(button.dataset.projectPath)];
-          await api('/api/project-paths/open?project=' + encodeURIComponent(projectId), {id: entry.id}, true);
+          await api('/api/application-paths/open?project=' + encodeURIComponent(projectId), {assetPath:data.assetPath,id:entry.id}, true);
           showToast('已打开：' + entry.name, 'ok');
         } catch (e) { showToast('打开目录失败：' + e.message, 'err'); }
         finally { button.disabled = false; }
@@ -377,8 +378,8 @@ async function renderProjectPaths(host, projectId) {
     });
   } catch (e) {
     if (host.pathRequest !== request) return;
-    host.innerHTML = `<h4>快捷打开目录</h4><p role="alert">读取失败：${esc(e.message)}</p><button type="button" class="btn btn-ghost btn-xs" data-path-retry>重试</button>`;
-    host.querySelector('[data-path-retry]').onclick = () => renderProjectPaths(host, projectId);
+    host.innerHTML = `<h4>Application 路径</h4><p role="alert">读取失败：${esc(e.message)}</p><button type="button" class="btn btn-ghost btn-xs" data-path-retry>重试</button>`;
+    host.querySelector('[data-path-retry]').onclick = () => renderProjectPaths(host, projectId, assetPath);
   }
 }
 async function readRootConfig() {
@@ -535,6 +536,7 @@ function fillForm(cfg) {
       target: n.target,
       targetName: n.targetName,
       productName: n.productName,
+      companyName: n.companyName,
       bundleVersion: n.bundleVersion,
       sceneCount: n.sceneCount,
       absPath: n.absPath,
@@ -565,6 +567,7 @@ function fillForm(cfg) {
         target: q.target,
         targetName: q.targetName,
         productName: q.productName,
+        companyName: q.companyName,
         bundleVersion: q.bundleVersion,
         sceneCount: q.sceneCount,
         absPath: q.absPath,
@@ -634,6 +637,8 @@ async function doScan() {
   $('btnScan').disabled = true;
   try {
     const r = await api("/api/scan", { projectPath, profileDir: $('profileDir').value.trim() });
+    state.scannedProjectId = state.activeProjectId;
+    state.scannedProjectPath = projectPath;
     state.profiles = r.profiles || [];
     syncBuildNodesWithProfiles();
     const ver = r.unityVersion ? r.unityVersion : "（未识别）";
@@ -978,7 +983,7 @@ function updateModalPlatformUI() {
   if (dtBox) {
     if (p) {
       dtBox.className = "vcs-probe-result ok";
-      dtBox.textContent = `✓ 已匹配 Profile: ${p.name} | 平台: ${p.targetName} | 场景数: ${p.sceneCount} | 版本: ${p.bundleVersion || "1.0"}${p.productName ? " | 产品���: " + p.productName : ""}`;
+      dtBox.textContent = `✓ 已匹配 Profile: ${p.name} | 平台: ${p.targetName} | 场景数: ${p.sceneCount} | 版本: ${p.bundleVersion || "（未设置）"}${p.productName ? " | 产品名: " + p.productName : ""}`;
     } else if (assetPath) {
       dtBox.className = "vcs-probe-result";
       dtBox.textContent = `ℹ 关联 Profile 路径: ${assetPath}（若未扫描到完整元数据，可在上方点击「扫描 Profile」）`;
@@ -997,6 +1002,62 @@ function updateModalPlatformUI() {
   } else {
     $('pcHint').textContent = "💡 Windows 平台：构建完成后将自动打包压缩为包含 exe 与 _Data 的 ZIP 归档。";
   }
+}
+
+let playerSettingsRequest = 0;
+let playerSettings = null;
+async function loadProfilePlayerSettings() {
+  const request = ++playerSettingsRequest;
+  const assetPath = $('pcProfileSelect').value;
+  const projectId = state.activeProjectId;
+  playerSettings = null;
+  const fields = ['pcProductName', 'pcCompanyName', 'pcBundleVersion'];
+  for (const id of fields) { $(id).value = ''; $(id).disabled = true; }
+  $('pcPlayerSave').disabled = true;
+  const info = $('pcPlayerSettingsInfo');
+  if (!assetPath) { info.textContent = '请先选择 Profile。'; return; }
+  if (state.scannedProjectId !== projectId || state.scannedProjectPath !== $('projectPath').value.trim()) {
+    info.textContent = '请先扫描当前项目，再读取设置。'; return;
+  }
+  info.textContent = '正在读取 Player Settings…';
+  try {
+    await flushProjectSaves();
+    if (request !== playerSettingsRequest || projectId !== state.activeProjectId || assetPath !== $('pcProfileSelect').value) return;
+    const data = await api('/api/profile-settings/read', {assetPath});
+    if (request !== playerSettingsRequest || projectId !== state.activeProjectId || assetPath !== $('pcProfileSelect').value) return;
+    playerSettings = {assetPath, projectId, revision:data.revision};
+    const profile = state.profiles.find(p => p.assetPath === assetPath);
+    if (profile) Object.assign(profile, {productName:data.productName, companyName:data.companyName, bundleVersion:data.bundleVersion});
+    syncBuildNodesWithProfiles();
+    updateModalPlatformUI();
+    $('pcProductName').value = data.productName ?? '';
+    $('pcCompanyName').value = data.companyName ?? '';
+    $('pcBundleVersion').value = data.bundleVersion ?? '';
+    for (const id of fields) $(id).disabled = !data.editable;
+    $('pcPlayerSave').disabled = !data.editable;
+    info.textContent = `${data.fallback ? '项目默认设置' : data.inherited ? '继承项目设置，保存后创建 Profile 覆盖' : 'Profile 覆盖设置'}：${data.path}${data.editable ? '。点击“保存到文件”直接写回；底部按钮仅保存节点配置。' : '。文件缺少完整 Player Settings，请先在 Unity 中启用覆盖。'}`;
+  } catch(e) {
+    if (request === playerSettingsRequest) info.textContent = '读取失败：' + e.message;
+  }
+}
+async function saveProfilePlayerSettings() {
+  const current = playerSettings;
+  if (!current || current.projectId !== state.activeProjectId || current.assetPath !== $('pcProfileSelect').value) return;
+  if (state.scannedProjectPath !== $('projectPath').value.trim()) { showToast('工程路径已修改，请重新扫描后再保存。', 'err'); return; }
+  $('pcPlayerSave').disabled = true;
+  try {
+    const data = await api('/api/profile-settings/write', {assetPath:current.assetPath, revision:current.revision, productName:$('pcProductName').value, companyName:$('pcCompanyName').value, bundleVersion:$('pcBundleVersion').value});
+    if (current !== playerSettings) return;
+    playerSettings.revision = data.revision;
+    const profile = state.profiles.find(p => p.assetPath === current.assetPath);
+    if (profile) Object.assign(profile, {productName:data.productName, companyName:data.companyName, bundleVersion:data.bundleVersion});
+    syncBuildNodesWithProfiles();
+    scheduleSave();
+    updateModalPlatformUI();
+    $('pcPlayerSettingsInfo').textContent = `已保存：${data.path}`;
+    showToast('Player Settings 已保存', 'ok');
+  } catch(e) { if (current === playerSettings) $('pcPlayerSettingsInfo').textContent = '保存失败：' + e.message; }
+  finally { if (current === playerSettings) $('pcPlayerSave').disabled = false; }
 }
 
 function openBuildNodeModal(nodeId, targetGroupId) {
@@ -1061,6 +1122,7 @@ function openBuildNodeModal(nodeId, targetGroupId) {
   $('pcVcsEnabled').checked = state.pcVcsGroups.length > 0;
   renderPcVcsChips();
   updateModalPlatformUI();
+  loadProfilePlayerSettings();
 
   $('profileCfgModal').classList.remove("hidden");
   $('pcNodeName').focus();
@@ -1080,6 +1142,7 @@ function onProfileSelectChange() {
     }
   }
   updateModalPlatformUI();
+  loadProfilePlayerSettings();
 }
 
 function saveBuildNodeModal() {
@@ -1101,6 +1164,7 @@ function saveBuildNodeModal() {
     target: p ? p.target : (state.buildEditNodeId ? buildNodeById(state.buildEditNodeId)?.target : 19),
     targetName: p ? p.targetName : (isAndroid ? "Android" : "Windows (x64)"),
     productName: p ? p.productName : null,
+    companyName: p ? p.companyName : null,
     bundleVersion: p ? p.bundleVersion : null,
     sceneCount: p ? p.sceneCount : 0,
     absPath: p ? p.absPath : "",
@@ -1137,6 +1201,8 @@ function saveBuildNodeModal() {
     showToast(`已添加节点「${newNode.name}」`, "ok");
   }
 
+  ++playerSettingsRequest;
+  playerSettings = null;
   $('profileCfgModal').classList.add("hidden");
   state.buildEditNodeId = null;
   state.buildEditTargetGroupId = null;
@@ -1146,6 +1212,8 @@ function saveBuildNodeModal() {
 }
 
 function closeBuildNodeModal() {
+  ++playerSettingsRequest;
+  playerSettings = null;
   $('profileCfgModal').classList.add("hidden");
   state.buildEditNodeId = null;
   state.buildEditTargetGroupId = null;
@@ -2881,6 +2949,8 @@ async function init() {
   if ($('btnBuildAddNode')) $('btnBuildAddNode').onclick = () => openBuildNodeModal(null, null);
   if ($('btnBuildAddGroup')) $('btnBuildAddGroup').onclick = addBuildGroup;
   if ($('pcProfileSelect')) $('pcProfileSelect').onchange = onProfileSelectChange;
+  $('pcPlayerReload').onclick = loadProfilePlayerSettings;
+  $('pcPlayerSave').onclick = saveProfilePlayerSettings;
 
   // 4. 按钮事件
   $('btnUseRepo').onclick = () => { $('projectPath').value = '..\\..'; scheduleSave(); doScan(); };
