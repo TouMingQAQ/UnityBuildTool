@@ -1904,6 +1904,14 @@ body {
 .monitor-state { float: right; color: var(--accent-primary); }
 .monitor-metrics { padding: 12px; background: rgba(56, 189, 248, 0.06); border-radius: var(--radius-sm); line-height: 1.8; }
 .monitor-artifacts { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.project-paths { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.project-paths-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.project-paths h4 { margin: 8px 0; }
+.project-path-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+.project-path-entry > div { min-width: 0; }
+.project-path-entry > button { flex-shrink: 0; }
+.project-path-value { display: block; overflow-wrap: anywhere; user-select: text; font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.project-path-entry small { display: block; color: var(--text-muted); margin-top: 4px; }
 .monitor-artifact-heading, .monitor-artifact-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .monitor-artifact-heading { justify-content: space-between; }
 .monitor-artifact-heading h4 { margin: 8px 0; }

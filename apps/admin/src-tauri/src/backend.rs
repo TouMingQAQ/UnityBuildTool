@@ -3,6 +3,7 @@ mod check;
 mod projects;
 mod process_memory;
 mod monitor;
+mod paths;
 #[cfg(test)]
 mod tests;
 mod vcs;
@@ -878,6 +879,8 @@ impl Backend {
                 Ok(json!({"ok":true}))
             }
             ("GET", "/api/outputs") => Ok(self.outputs()),
+            ("GET", "/api/project-paths") => Ok(self.project_paths()),
+            ("POST", "/api/project-paths/open") => self.open_project_path(&valstr(&body, "id")),
             ("POST", "/api/artifacts/list") | ("POST", "/api/artifacts/open-folder") => {
                 let roots = crate::http::download::roots(&self.config(), &self.runtime_root);
                 let id = valstr(&body, "root");

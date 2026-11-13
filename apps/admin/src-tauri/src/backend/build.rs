@@ -531,6 +531,10 @@ fn group_nodes(config: &Value, request: &Value, profile: &Value) -> (Vec<Value>,
 }
 fn exclude(name: &str, dir: bool, target: i64) -> bool {
     let n = name.to_ascii_lowercase();
+    // Windows build info is generated beside the finished ZIP; skip stale copies too.
+    if !dir && matches!(target, 5 | 19) && n == "build-info.txt" {
+        return true;
+    }
     matches!(
         n.as_str(),
         ".buildtool"
@@ -1136,7 +1140,9 @@ impl super::Backend {
         let kind = text(&c.profile, "androidBuildKind");
         let android_file = target == 13 && matches!(kind, "apk" | "aab");
         let mut info=format!("Profile: {}\nTarget: {}\nProduct: {}\nVersion: {}\nBuildNumber: {}\nDEV: {}\nDate: {}\nDuration: {}s\nSourceDir: {}\n",text(&resolved,"name"),resolved_target_name,text(&result,"productName"),text(&result,"version"),c.no,c.profile["dev"]==true,now.format("%Y-%m-%d %H:%M:%S"),duration.as_secs(),c.dir.display());
-        fs::write(c.dir.join("build-info.txt"), &info).map_err(|e| e.to_string())?;
+        if !matches!(target, 5 | 19) {
+            fs::write(c.dir.join("build-info.txt"), &info).map_err(|e| e.to_string())?;
+        }
         let file = if android_file {
             let dst = final_dir.join(output.file_name().ok_or("产物没有文件名")?);
             fs::copy(&output, &dst).map_err(|e| e.to_string())?;
@@ -1385,6 +1391,49 @@ mod tests {
             fs::read_to_string(Path::new(out["dir"].as_str().unwrap()).join("build-info.txt"))
                 .unwrap();
         assert!(info.contains("Product: ActualProduct\nVersion: 2.0"));
+    }
+
+    #[test]
+    fn windows_archive_writes_info_beside_zip() {
+        for target in [5, 19] {
+            for stale_info in [false, true] {
+                let root = tempdir().unwrap();
+                let backend =
+                    super::super::Backend::new(root.path().join("config.json"), root.path().into());
+                let body = json!({"projectPath":root.path(), "profiles":[{"name":"Profile", "target":target, "autoZip":true}]});
+                let ctx = Context::new(&backend, &body, &body["profiles"][0], 1);
+                fs::create_dir_all(ctx.dir.join("Game_Data")).unwrap();
+                let player = ctx.dir.join("Game.exe");
+                fs::write(&player, b"game").unwrap();
+                fs::write(ctx.dir.join("Game_Data/data"), b"data").unwrap();
+                fs::write(
+                    ctx.dir.join("build-result.json"),
+                    json!({"outputPath":player,"productName":"Game","version":"2.0"}).to_string(),
+                )
+                .unwrap();
+                let source_info = ctx.dir.join("build-info.txt");
+                if stale_info {
+                    fs::write(&source_info, "previous build").unwrap();
+                }
+
+                let out = backend.archive_build(&ctx, Duration::from_secs(7), 0).unwrap();
+                let zip_path = Path::new(out["file"].as_str().unwrap());
+                let mut archive = zip::ZipArchive::new(File::open(zip_path).unwrap()).unwrap();
+                let names: Vec<_> = (0..archive.len())
+                    .map(|i| archive.by_index(i).unwrap().name().to_string())
+                    .collect();
+                assert_eq!(names, vec!["Game.exe", "Game_Data/data"]);
+                let info = fs::read_to_string(zip_path.parent().unwrap().join("build-info.txt")).unwrap();
+                assert!(info.contains("Product: Game\nVersion: 2.0"));
+                assert!(info.contains("Duration: 7s\n"));
+                assert!(info.contains(&format!("Output: {}\nSize: {}\n", zip_path.display(), fs::metadata(zip_path).unwrap().len())));
+                if stale_info {
+                    assert_eq!(fs::read_to_string(source_info).unwrap(), "previous build");
+                } else {
+                    assert!(!source_info.exists());
+                }
+            }
+        }
     }
 
     #[test]

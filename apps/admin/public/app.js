@@ -345,6 +345,41 @@ function renderProjects() {
   if (hint) { const p = activeProject(); hint.textContent = p ? `以下构建、仓库、引擎和检测配置均属于“${p.name}”` : '请选择项目'; }
 
   $('btnCopyWebsite').disabled = !p;
+  renderProjectPaths($('settingsProjectPaths'), state.activeProjectId);
+}
+
+async function renderProjectPaths(host, projectId) {
+  const request = (host.pathRequest || 0) + 1;
+  host.pathRequest = request;
+  host.innerHTML = '<h4>快捷打开目录</h4><p role="status">正在读取路径…</p>';
+  if (!projectId) { host.innerHTML = '<h4>快捷打开目录</h4><p class="field-hint">请先选择项目。</p>'; return; }
+  const route = '/api/project-paths?project=' + encodeURIComponent(projectId);
+  try {
+    const data = await api(route, undefined, true);
+    if (host.pathRequest !== request) return;
+    host.innerHTML = `<div class="project-paths-heading"><h4>快捷打开目录</h4><button type="button" class="btn btn-ghost btn-xs" data-path-refresh>刷新路径</button></div><div class="project-path-list">${data.paths.map((entry, i) => `<div class="project-path-entry"><div><strong>${esc(entry.name)}</strong><span class="project-path-value">${esc(entry.path)}</span>${entry.exists ? '' : '<small>目录尚未生成或已移除</small>'}</div><button type="button" class="btn btn-ghost btn-xs" data-project-path="${i}" ${entry.exists ? '' : 'disabled'}>打开</button></div>`).join('') || '<p class="field-hint">请先配置工程路径或仓库路径。</p>'}</div>`;
+    host.querySelector('[data-path-refresh]').onclick = async () => {
+      try {
+        if (projectId === state.activeProjectId) await flushProjectSaves();
+        if (host.pathRequest === request) renderProjectPaths(host, projectId);
+      } catch (e) { showToast(e.message, 'err'); }
+    };
+    host.querySelectorAll('[data-project-path]').forEach(button => {
+      button.onclick = async () => {
+        button.disabled = true;
+        try {
+          const entry = data.paths[Number(button.dataset.projectPath)];
+          await api('/api/project-paths/open?project=' + encodeURIComponent(projectId), {id: entry.id}, true);
+          showToast('已打开：' + entry.name, 'ok');
+        } catch (e) { showToast('打开目录失败：' + e.message, 'err'); }
+        finally { button.disabled = false; }
+      };
+    });
+  } catch (e) {
+    if (host.pathRequest !== request) return;
+    host.innerHTML = `<h4>快捷打开目录</h4><p role="alert">读取失败：${esc(e.message)}</p><button type="button" class="btn btn-ghost btn-xs" data-path-retry>重试</button>`;
+    host.querySelector('[data-path-retry]').onclick = () => renderProjectPaths(host, projectId);
+  }
 }
 async function readRootConfig() {
   const result = await api('/api/config', undefined, true);
@@ -1185,10 +1220,10 @@ async function openFolder(p) {
 }
 
 async function openOutputBaseFolder() {
-  const outBase = $('outputBase')?.value.trim() || 'Builds';
   try {
-    const r = await api('/api/open-folder', { path: outBase });
-    showToast(`已打开输出目录: ${r.opened || outBase}`, 'ok');
+    await flushProjectSaves();
+    const r = await api('/api/project-paths/open', { id: 'builds' });
+    showToast(`已打开输出目录: ${r.opened}`, 'ok');
   } catch (e) {
     showToast('打开输出目录失败: ' + e.message, 'err');
   }

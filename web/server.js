@@ -361,6 +361,9 @@ function shouldExcludeFromZip(relPath, fileName, isDirectory, target) {
   const lowerName = fileName.toLowerCase();
   const lowerRel = relPath.replace(/\\/g, '/').toLowerCase();
 
+  // Windows 的构建说明在 ZIP 完成后单独生成，也排除旧版本遗留的说明。
+  if (!isDirectory && (target === 5 || target === 19) && lowerName === 'build-info.txt') return true;
+
   // 1. 系统残留与版本控制元数据
   if (lowerName === '.ds_store' || lowerName === 'thumbs.db' || lowerName === 'desktop.ini' || lowerName === 'ehthumbs.db') return true;
   if (lowerName === '.git' || lowerName === '.svn' || lowerName === '.hg' || lowerName === '.vs' || lowerName === '.idea' || lowerName === '.vscode') return true;
@@ -715,10 +718,6 @@ function finalizeArtifact(profile, ctx, durationMs) {
   } else {
     // Windows
     fs.mkdirSync(ctx.dir, { recursive: true });
-    fs.writeFileSync(path.join(ctx.dir, 'build-info.txt'),
-      ['Profile: ' + profile.name, 'Target: ' + (profile.targetName || 'Windows'), 'Product: ' + prod,
-       'Version: ' + (version || ''), 'BuildNumber: ' + (buildNo != null ? buildNo : ''),
-       'DEV: ' + (ctx.dev ? 'true' : 'false'), 'Date: ' + dateStr].join('\n') + '\n', 'utf8');
 
     if (autoZip) {
       kind = 'zip';
