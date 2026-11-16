@@ -1004,62 +1004,6 @@ function updateModalPlatformUI() {
   }
 }
 
-let playerSettingsRequest = 0;
-let playerSettings = null;
-async function loadProfilePlayerSettings() {
-  const request = ++playerSettingsRequest;
-  const assetPath = $('pcProfileSelect').value;
-  const projectId = state.activeProjectId;
-  playerSettings = null;
-  const fields = ['pcProductName', 'pcCompanyName', 'pcBundleVersion'];
-  for (const id of fields) { $(id).value = ''; $(id).disabled = true; }
-  $('pcPlayerSave').disabled = true;
-  const info = $('pcPlayerSettingsInfo');
-  if (!assetPath) { info.textContent = '请先选择 Profile。'; return; }
-  if (state.scannedProjectId !== projectId || state.scannedProjectPath !== $('projectPath').value.trim()) {
-    info.textContent = '请先扫描当前项目，再读取设置。'; return;
-  }
-  info.textContent = '正在读取 Player Settings…';
-  try {
-    await flushProjectSaves();
-    if (request !== playerSettingsRequest || projectId !== state.activeProjectId || assetPath !== $('pcProfileSelect').value) return;
-    const data = await api('/api/profile-settings/read', {assetPath});
-    if (request !== playerSettingsRequest || projectId !== state.activeProjectId || assetPath !== $('pcProfileSelect').value) return;
-    playerSettings = {assetPath, projectId, revision:data.revision};
-    const profile = state.profiles.find(p => p.assetPath === assetPath);
-    if (profile) Object.assign(profile, {productName:data.productName, companyName:data.companyName, bundleVersion:data.bundleVersion});
-    syncBuildNodesWithProfiles();
-    updateModalPlatformUI();
-    $('pcProductName').value = data.productName ?? '';
-    $('pcCompanyName').value = data.companyName ?? '';
-    $('pcBundleVersion').value = data.bundleVersion ?? '';
-    for (const id of fields) $(id).disabled = !data.editable;
-    $('pcPlayerSave').disabled = !data.editable;
-    info.textContent = `${data.fallback ? '项目默认设置' : data.inherited ? '继承项目设置，保存后创建 Profile 覆盖' : 'Profile 覆盖设置'}：${data.path}${data.editable ? '。点击“保存到文件”直接写回；底部按钮仅保存节点配置。' : '。文件缺少完整 Player Settings，请先在 Unity 中启用覆盖。'}`;
-  } catch(e) {
-    if (request === playerSettingsRequest) info.textContent = '读取失败：' + e.message;
-  }
-}
-async function saveProfilePlayerSettings() {
-  const current = playerSettings;
-  if (!current || current.projectId !== state.activeProjectId || current.assetPath !== $('pcProfileSelect').value) return;
-  if (state.scannedProjectPath !== $('projectPath').value.trim()) { showToast('工程路径已修改，请重新扫描后再保存。', 'err'); return; }
-  $('pcPlayerSave').disabled = true;
-  try {
-    const data = await api('/api/profile-settings/write', {assetPath:current.assetPath, revision:current.revision, productName:$('pcProductName').value, companyName:$('pcCompanyName').value, bundleVersion:$('pcBundleVersion').value});
-    if (current !== playerSettings) return;
-    playerSettings.revision = data.revision;
-    const profile = state.profiles.find(p => p.assetPath === current.assetPath);
-    if (profile) Object.assign(profile, {productName:data.productName, companyName:data.companyName, bundleVersion:data.bundleVersion});
-    syncBuildNodesWithProfiles();
-    scheduleSave();
-    updateModalPlatformUI();
-    $('pcPlayerSettingsInfo').textContent = `已保存：${data.path}`;
-    showToast('Player Settings 已保存', 'ok');
-  } catch(e) { if (current === playerSettings) $('pcPlayerSettingsInfo').textContent = '保存失败：' + e.message; }
-  finally { if (current === playerSettings) $('pcPlayerSave').disabled = false; }
-}
-
 function openBuildNodeModal(nodeId, targetGroupId) {
   state.buildEditNodeId = nodeId || null;
   state.buildEditTargetGroupId = targetGroupId || null;
@@ -1122,7 +1066,6 @@ function openBuildNodeModal(nodeId, targetGroupId) {
   $('pcVcsEnabled').checked = state.pcVcsGroups.length > 0;
   renderPcVcsChips();
   updateModalPlatformUI();
-  loadProfilePlayerSettings();
 
   $('profileCfgModal').classList.remove("hidden");
   $('pcNodeName').focus();
@@ -1142,7 +1085,6 @@ function onProfileSelectChange() {
     }
   }
   updateModalPlatformUI();
-  loadProfilePlayerSettings();
 }
 
 function saveBuildNodeModal() {
@@ -1201,8 +1143,6 @@ function saveBuildNodeModal() {
     showToast(`已添加节点「${newNode.name}」`, "ok");
   }
 
-  ++playerSettingsRequest;
-  playerSettings = null;
   $('profileCfgModal').classList.add("hidden");
   state.buildEditNodeId = null;
   state.buildEditTargetGroupId = null;
@@ -1212,8 +1152,6 @@ function saveBuildNodeModal() {
 }
 
 function closeBuildNodeModal() {
-  ++playerSettingsRequest;
-  playerSettings = null;
   $('profileCfgModal').classList.add("hidden");
   state.buildEditNodeId = null;
   state.buildEditTargetGroupId = null;
@@ -2949,8 +2887,6 @@ async function init() {
   if ($('btnBuildAddNode')) $('btnBuildAddNode').onclick = () => openBuildNodeModal(null, null);
   if ($('btnBuildAddGroup')) $('btnBuildAddGroup').onclick = addBuildGroup;
   if ($('pcProfileSelect')) $('pcProfileSelect').onchange = onProfileSelectChange;
-  $('pcPlayerReload').onclick = loadProfilePlayerSettings;
-  $('pcPlayerSave').onclick = saveProfilePlayerSettings;
 
   // 4. 按钮事件
   $('btnUseRepo').onclick = () => { $('projectPath').value = '..\\..'; scheduleSave(); doScan(); };

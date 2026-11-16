@@ -621,7 +621,7 @@ impl Backend {
             if !TARGETS.iter().any(|v| v.0 == target) {
                 continue;
             }
-            let settings = profile_settings::describe(&t, &project_settings, false);
+            let settings = profile_settings::read(&t, &project_settings);
             profiles.push(json!({"name":field("m_Name").unwrap_or_else(||f.file_stem().unwrap_or_default().to_string_lossy().into()),"target":target,"targetName":target_name(target),"assetPath":f.strip_prefix(&p).unwrap_or(&f).to_string_lossy().replace('\\',"/"),"absPath":f,"sceneCount":t.matches("m_path:").count(),"bundleVersion":settings["bundleVersion"],"productName":settings["productName"],"companyName":settings["companyName"],"subtarget":field("m_Subtarget").and_then(|s|s.parse::<i64>().ok()).unwrap_or(0),"keystoreName":field("AndroidKeystoreName"),"keyaliasName":field("AndroidKeyaliasName"),"useCustomKeystore":field("androidUseCustomKeystore").as_deref()==Some("1")}));
         }
         if profiles.is_empty() {
@@ -638,7 +638,7 @@ impl Backend {
             let scene_count = fs::read_to_string(p.join("ProjectSettings/EditorBuildSettings.asset"))
                 .map(|t| t.lines().filter(|l| l.trim_start().starts_with("path:")).count())
                 .unwrap_or(0);
-            let settings = profile_settings::describe(&ps, &ps, true);
+            let settings = profile_settings::read(&ps, &ps);
             let product = valstr(&settings, "productName");
             let name = if product.trim().is_empty() {
                 "项目默认配置".to_string()
@@ -885,8 +885,6 @@ impl Backend {
                 Ok(json!({"ok":true}))
             }
             ("GET", "/api/outputs") => Ok(self.outputs()),
-            ("POST", "/api/profile-settings/read") => self.profile_settings_read(&body),
-            ("POST", "/api/profile-settings/write") => self.profile_settings_write(&body),
             ("GET", "/api/project-paths") => Ok(self.project_paths()),
             ("POST", "/api/project-paths/open") => self.open_project_path(&valstr(&body, "id")),
             ("POST", "/api/application-paths/read") => self.application_paths(&body),
