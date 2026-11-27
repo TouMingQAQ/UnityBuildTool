@@ -10,8 +10,8 @@
     "app:dev": "node scripts/admin.js dev",
     "build:admin": "node scripts/admin.js build",
     "test:rust": "node scripts/admin.js test",
-    "test": "node scripts/admin.js test && node --test web/test/*.test.js",
-    "test:legacy": "node --test web/test/*.test.js",
+    "test": "node scripts/admin.js test && node --test",
+    "test:legacy": "node --test",
     "check:rust": "node scripts/admin.js check",
     "check": "node --check web/server.js && node --check web/user-api.js && node --check apps/user/public/user.js"
   }
