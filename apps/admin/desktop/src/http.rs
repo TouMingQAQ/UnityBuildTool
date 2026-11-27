@@ -24,18 +24,7 @@ pub struct Service {
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 impl Service {
-    pub fn start(
-        config: PathBuf,
-        root: PathBuf,
-        token: String,
-    ) -> Result<(Service, String), Box<dyn Error>> {
-        if token.is_empty()
-            || !token
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        {
-            return Err("管理令牌必须为非空安全 ASCII 字符串".into());
-        }
+    pub fn start(config: PathBuf, root: PathBuf) -> Result<(Service, String), Box<dyn Error>> {
         let backend = Backend::new(config, root.clone());
         let settings = backend.config();
         let (host, port) = listen_address(&settings)?;
@@ -48,7 +37,6 @@ impl Service {
         let state = Arc::new(State {
             backend: backend.clone(),
             root,
-            token,
             origin: base.clone(),
             stopping: stopping.clone(),
             active: AtomicUsize::new(0),
@@ -86,6 +74,9 @@ impl Service {
             base,
         ))
     }
+    pub fn backend(&self) -> Arc<Backend> {
+        self.backend.clone()
+    }
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
         if let Some(server) = self.server.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -106,7 +97,6 @@ impl Drop for Service {
 struct State {
     backend: Arc<Backend>,
     root: PathBuf,
-    token: String,
     origin: String,
     stopping: Arc<AtomicBool>,
     active: AtomicUsize,
@@ -164,25 +154,6 @@ fn req_header<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
         .iter()
         .find(|h| h.field.equiv(name))
         .map(|h| h.value.as_str())
-}
-fn equal(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |diff, (x, y)| diff | (x ^ y))
-        == 0
-}
-fn authorized(request: &Request, token: &str) -> bool {
-    if let Some(value) = req_header(request, "x-admin-token") {
-        return equal(value, token);
-    }
-    req_header(request, "cookie")
-        .unwrap_or("")
-        .split(';')
-        .filter_map(|s| s.trim().split_once('='))
-        .any(|(k, v)| k == "tbuild_admin" && equal(v, token))
 }
 fn decode(input: &str, plus: bool) -> Result<String, download::Fault> {
     let mut result = Vec::new();
@@ -279,97 +250,29 @@ fn serve(mut request: Request, state: &State) {
         error(request, (403, "不允许跨站提交操作".into()));
         return;
     }
-    let admin = authorized(&request, &state.token);
     if path == "/admin" || path.starts_with("/admin/") {
-        if method != "GET" {
-            error(request, (405, "仅支持 GET".into()));
-            return;
-        }
-        if matches!(path.as_str(), "/admin" | "/admin/")
-            && query.get("token").is_some_and(|v| equal(v, &state.token))
-        {
-            let response = Response::empty(303)
-                .with_header(header("Location", "/admin/"))
-                .with_header(header(
-                    "Set-Cookie",
-                    &format!(
-                        "tbuild_admin={}; HttpOnly; SameSite=Strict; Path=/",
-                        state.token
-                    ),
-                ))
-                .with_header(header("Referrer-Policy", "no-referrer"));
-            let _ = request.respond(response);
-            return;
-        }
-        if !admin {
-            error(request, (401, "管理端需要授权".into()));
-            return;
-        }
-        let asset = match path.as_str() {
-            "/admin" | "/admin/" | "/admin/index.html" => Some((
-                include_bytes!("../../public/index.html").as_slice(),
-                "text/html; charset=utf-8",
-            )),
-            "/admin/app.js" => Some((
-                include_bytes!("../../public/app.js").as_slice(),
-                "text/javascript; charset=utf-8",
-            )),
-            "/admin/monitor.js" => Some((
-                include_bytes!("../../public/monitor.js").as_slice(),
-                "text/javascript; charset=utf-8",
-            )),
-            "/admin/style.css" => Some((
-                include_bytes!("../../public/style.css").as_slice(),
-                "text/css; charset=utf-8",
-            )),
-            _ => None,
-        };
-        static_response(request, asset);
+        error(request, (404, "not found".into()));
         return;
     }
     if path.starts_with("/api/") {
-        let route = project_route(&path);
-        let public = route.is_some() || path.starts_with("/api/user/");
-        let scope = if let Some((slug, _)) = route {
-            match state.backend.project_by_slug(slug) {
-                Ok((id, project)) => Some((id, project, slug.to_owned())),
-                Err(e) => {
-                    error(request, e);
-                    return;
-                }
-            }
-        } else {
-            None
-        };
-        // Unscoped public routes cannot select or expose another project's state.
-        if public && scope.is_none() {
+        let Some((slug, suffix)) = project_route(&path) else {
             error(request, (404, "请通过项目链接访问".into()));
             return;
-        }
-        let path = route
-            .map(|(_, suffix)| format!("/api/user/{suffix}"))
-            .unwrap_or(path.clone());
-        let admin_project = query.get("project").map(String::as_str);
-        if public && !public_route(&method, &path) {
+        };
+        let path = format!("/api/user/{suffix}");
+        if !public_route(&method, &path) {
             error(request, (404, "用户端不提供此操作".into()));
             return;
         }
-        if !public && !admin {
-            error(request, (401, "管理接口需要管理端授权".into()));
-            return;
-        }
-        if method == "GET" && (path == "/api/user/events" || path == "/api/build/events") {
-            let event_id = scope
-                .as_ref()
-                .map(|(id, _, _)| id.as_str())
-                .or(admin_project);
-            events(
-                request,
-                state,
-                public,
-                event_id,
-                scope.as_ref().map(|(_, _, slug)| slug.as_str()),
-            );
+        let (id, project) = match state.backend.project_by_slug(slug) {
+            Ok(value) => value,
+            Err(e) => {
+                error(request, e);
+                return;
+            }
+        };
+        if method == "GET" && path == "/api/user/events" {
+            events(request, state, true, Some(&id), Some(slug));
             return;
         }
         if method == "GET"
@@ -378,8 +281,7 @@ fn serve(mut request: Request, state: &State) {
                 "/api/user/files" | "/api/user/download" | "/api/user/download-folder"
             )
         {
-            let config = &scope.as_ref().expect("public project scope validated").1;
-            let roots = download::roots(config, &state.root);
+            let roots = download::roots(&project, &state.root);
             let id = query.get("root").map(String::as_str).unwrap_or("");
             let relative = query.get("path").map(String::as_str).unwrap_or("");
             if path == "/api/user/files" {
@@ -459,15 +361,9 @@ fn serve(mut request: Request, state: &State) {
                 }
             }
         };
-        let result = if let Some((_, _, slug)) = scope {
-            state
-                .backend
-                .handle_user_project(&method, &path, body, &slug)
-        } else if let Some(id) = admin_project {
-            state.backend.handle_admin_project(&method, &path, body, id)
-        } else {
-            state.backend.handle(&method, &path, body)
-        };
+        let result = state
+            .backend
+            .handle_user_project(&method, &path, body, slug);
         match result {
             Ok(v) => respond_json(request, 200, v),
             Err(e) => error(request, e),
@@ -679,14 +575,13 @@ mod tests {
         assert!(url("/%zz").is_err());
     }
     #[test]
-    fn loopback_routes_and_authorization() {
+    fn loopback_routes_and_management_removed() {
         use std::net::TcpStream;
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("config.json"), json!({"schemaVersion":2,"server":{"port":0},"projects":[{"id":"alpha","slug":"alpha","name":"Alpha","enabled":true}]}).to_string()).unwrap();
         let (service, base) = Service::start(
             directory.path().join("config.json"),
             directory.path().to_owned(),
-            "test-token".into(),
         )
         .unwrap();
         let send = |path: &str, extra: &str| {
@@ -707,14 +602,9 @@ mod tests {
         assert!(send("/", "").starts_with("HTTP/1.1 200"));
         assert!(send("/p/alpha", "").starts_with("HTTP/1.1 200"));
         assert!(send("/api/projects/unknown/catalog", "").starts_with("HTTP/1.1 404"));
-        assert!(send("/api/config", "").starts_with("HTTP/1.1 401"));
-        assert!(send("/admin/app.js", "").starts_with("HTTP/1.1 401"));
-        let bootstrap = send("/admin/?token=test-token", "");
-        assert!(bootstrap.starts_with("HTTP/1.1 303"));
-        assert!(bootstrap.contains("HttpOnly; SameSite=Strict"));
-        assert!(send("/admin/app.js", "Cookie: tbuild_admin=test-token\r\n")
-            .starts_with("HTTP/1.1 200"));
-        assert!(send("/admin/", "x-admin-token: test-token\r\n").starts_with("HTTP/1.1 200"));
+        assert!(send("/api/config", "").starts_with("HTTP/1.1 404"));
+        assert!(send("/admin/app.js", "").starts_with("HTTP/1.1 404"));
+        assert!(send("/admin/?token=ignored", "").starts_with("HTTP/1.1 404"));
         assert!(send("/api/user/upload", "").starts_with("HTTP/1.1 404"));
         assert!(
             send("/api/projects/alpha/files?path=%2E%2E%2Fsecret", "").starts_with("HTTP/1.1 200")
@@ -725,14 +615,14 @@ mod tests {
         write!(stream,"POST /api/config HTTP/1.1\r\nHost: {}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}",base.trim_start_matches("http://")).unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).unwrap();
-        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 401"));
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 404"));
         assert_eq!(
             before,
             std::fs::read(directory.path().join("config.json")).unwrap()
         );
         service.stop();
     }
-    fn get(base: &str, path: &str, admin: bool) -> String {
+    fn get(base: &str, path: &str) -> String {
         use std::net::TcpStream;
         let host = base.trim_start_matches("http://");
         let mut socket = TcpStream::connect(host).unwrap();
@@ -741,12 +631,7 @@ mod tests {
             .unwrap();
         write!(
             socket,
-            "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{}\r\n",
-            if admin {
-                "x-admin-token: test-token\r\n"
-            } else {
-                ""
-            }
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n",
         )
         .unwrap();
         let mut response = String::new();
@@ -767,43 +652,35 @@ mod tests {
         ]});
         let config_path = dir.path().join("config.json");
         std::fs::write(&config_path, config.to_string()).unwrap();
-        let (service, base) = Service::start(
-            config_path.clone(),
-            dir.path().to_owned(),
-            "test-token".into(),
-        )
-        .unwrap();
-        let homepage = get(&base, "/", false);
+        let (service, base) = Service::start(config_path.clone(), dir.path().to_owned()).unwrap();
+        let homepage = get(&base, "/");
         assert!(
             homepage.contains("/p/alpha")
                 && homepage.contains("/p/beta")
                 && homepage.contains("A &lt;client&gt;")
         );
         assert!(!homepage.contains("/p/disabled"));
-        let alpha = get(&base, "/api/projects/alpha/catalog", false);
+        let alpha = get(&base, "/api/projects/alpha/catalog");
         assert!(
             alpha.starts_with("HTTP/1.1 200")
                 && alpha.contains("Alpha node")
                 && !alpha.contains("Beta node")
         );
-        let beta = get(&base, "/api/projects/beta/catalog", false);
+        let beta = get(&base, "/api/projects/beta/catalog");
         assert!(beta.contains("Beta node") && !beta.contains("Alpha node"));
         assert!(get(
             &base,
             "/api/projects/alpha/download?root=builds&path=result.txt",
-            false
         )
         .ends_with("alpha-only"));
         assert!(get(
             &base,
             "/api/projects/beta/download?root=builds&path=result.txt",
-            false
         )
         .ends_with("beta-only"));
         assert!(get(
             &base,
             "/api/projects/alpha/download?path=../../b/Builds/result.txt",
-            false
         )
         .starts_with("HTTP/1.1 403"));
         for path in [
@@ -814,20 +691,15 @@ mod tests {
             "/api/projects/alpha/config",
             "/api/user/catalog",
         ] {
-            assert!(
-                get(&base, path, false).starts_with("HTTP/1.1 404"),
-                "{path}"
-            );
+            assert!(get(&base, path).starts_with("HTTP/1.1 404"), "{path}");
         }
-        assert!(get(&base, "/api/status?project=a", true).starts_with("HTTP/1.1 200"));
-        assert!(get(&base, "/api/config?project=a", true).contains("Alpha node"));
+        assert!(get(&base, "/api/status?project=a").starts_with("HTTP/1.1 404"));
+        assert!(get(&base, "/api/config?project=a").starts_with("HTTP/1.1 404"));
         let port: u16 = base.rsplit(':').next().unwrap().parse().unwrap();
         let mut fixed = config;
         fixed["server"]["port"] = json!(port);
         std::fs::write(&config_path, fixed.to_string()).unwrap();
-        assert!(
-            Service::start(config_path, dir.path().to_owned(), "another-token".into()).is_err()
-        );
+        assert!(Service::start(config_path, dir.path().to_owned()).is_err());
         service.stop();
     }
     #[test]

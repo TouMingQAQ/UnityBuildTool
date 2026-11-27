@@ -21,11 +21,8 @@ const zlib = require('zlib');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, '../apps/user/public');
-const ADMIN_PUBLIC = path.join(ROOT, '../apps/admin/public');
-const crypto = require('crypto');
 const { ProgressDecoder } = require('./build-progress');
 const { createUserApi, within } = require('./user-api');
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || crypto.randomBytes(32).toString('hex');
 const CONFIG_PATH = process.env.CONFIG_PATH || path.join(ROOT, 'config.json');
 // ─────────────────────────── 配置 ───────────────────────────
 
@@ -360,12 +357,15 @@ function dosDateTime(d) {
 function shouldExcludeFromZip(relPath, fileName, isDirectory, target) {
   const lowerName = fileName.toLowerCase();
   const lowerRel = relPath.replace(/\\/g, '/').toLowerCase();
+  const internalSegments = new Set(['.buildtool', 'logs', 'check-results']);
+  if (lowerRel.split('/').some(segment => internalSegments.has(segment))) return true;
 
   // Windows 的构建说明在 ZIP 完成后单独生成，也排除旧版本遗留的说明。
   if (!isDirectory && (target === 5 || target === 19) && lowerName === 'build-info.txt') return true;
 
-  // 1. 系统残留与版本控制元数据
+  // 1. 系统残留、构建内部状态与版本控制元数据
   if (lowerName === '.ds_store' || lowerName === 'thumbs.db' || lowerName === 'desktop.ini' || lowerName === 'ehthumbs.db') return true;
+  if (lowerName === 'build-result.json') return true;
   if (lowerName === '.git' || lowerName === '.svn' || lowerName === '.hg' || lowerName === '.vs' || lowerName === '.idea' || lowerName === '.vscode') return true;
 
   // 2. 日志与崩溃转储文件
@@ -384,7 +384,7 @@ function shouldExcludeFromZip(relPath, fileName, isDirectory, target) {
   if (lowerName.endsWith('.tmp') || lowerName.endsWith('.temp') || lowerName.endsWith('.bak') || lowerName.endsWith('.swp') || lowerName.startsWith('~')) return true;
   if (lowerName.endsWith('.ilk') || lowerName.endsWith('.exp') || lowerName.endsWith('.tlog') || lowerName.endsWith('.idb') || lowerName.endsWith('.lastcodeanalysissucceeded')) return true;
 
-  // 5. 避免将其它��品打包进当前 zip
+  // 5. 避免将其它成品打包进当前 zip
   if (!isDirectory && (lowerName.endsWith('.apk') || lowerName.endsWith('.aab') || lowerName.endsWith('.zip'))) {
     return true;
   }
@@ -2051,14 +2051,6 @@ const userApi = createUserApi({
   outBase: resolveOutBase, project: () => resolveProject(config.projectPath),
   start: startJob, stop: stopJob, json: sendJson, readBody,
 });
-function authorized(req) {
-  const cookie = (req.headers.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith('tbuild_admin='));
-  const token = req.headers['x-admin-token'] || (cookie ? cookie.slice('tbuild_admin='.length) : '');
-  const expected = Buffer.from(ADMIN_TOKEN);
-  const actual = Buffer.from(String(token));
-  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
-}
-
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -2070,20 +2062,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (p === '/admin' || p.startsWith('/admin/')) {
-      const entry = (p === '/admin' || p === '/admin/') && u.searchParams.get('token') === ADMIN_TOKEN;
-      if (entry) {
-        res.writeHead(303, { Location: '/admin/', 'Set-Cookie': `tbuild_admin=${ADMIN_TOKEN}; HttpOnly; SameSite=Strict; Path=/`, 'Referrer-Policy': 'no-referrer' });
-        res.end(); return;
-      }
-      if (!authorized(req)) { res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('admin authorization required'); return; }
-      const adminPath = (p === '/admin' || p === '/admin/') ? '/index.html' : p.slice('/admin'.length);
-      const file = path.normalize(path.join(ADMIN_PUBLIC, adminPath));
-      if (!within(ADMIN_PUBLIC, file) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { sendJson(res, 404, { error: 'not found' }); return; }
-      const headers = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' };
-      if (p === '/admin' || p === '/admin/') headers['Set-Cookie'] = `tbuild_admin=${ADMIN_TOKEN}; HttpOnly; SameSite=Strict; Path=/`;
-      res.writeHead(200, headers); fs.createReadStream(file).pipe(res); return;
-    }
+    if (p === '/admin' || p.startsWith('/admin/')) { sendJson(res, 404, { error: 'not found' }); return; }
 
     if (req.method === 'GET' && p === '/workspace') {
       const file = path.join(PUBLIC, 'workspace.html');
@@ -2098,352 +2077,6 @@ const server = http.createServer(async (req, res) => {
       if (!fs.existsSync(file) || !fs.statSync(file).isFile()) { sendJson(res, 404, { error: 'not found' }); return; }
       res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
       fs.createReadStream(file).pipe(res);
-      return;
-    }
-
-    // Management APIs are never available to the unauthenticated user website.
-    if (!authorized(req)) { sendJson(res, 401, { error: '管理接口需要管理端授权' }); return; }
-    if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) { sendJson(res, 403, { error: '不允许跨站修改管理配置' }); return; }
-    // ── API ──
-    if (req.method === 'GET' && p === '/api/status') {
-      sendJson(res, 200, {
-        config,
-        unityExes: findUnityExes(),
-        cli: findUnityCli(),
-        outputs: scanOutputs(resolveOutBase()),
-        job: job ? { state: job.state, index: job.index, count: job.queue.length, cancel: job.cancel } : null,
-        check: check ? {
-          state: check.state, index: check.index, count: check.targets.length,
-          targets: check.targets, results: check.results, end: check.end || null, runDir: check.runDir,
-        } : null,
-        vcs: vcs ? {
-          state: vcs.state, index: vcs.index, count: vcs.nodes.length,
-          results: vcs.results, end: vcs.end || null,
-        } : null,
-      });
-      return;
-    }
-
-    if ((req.method === 'GET' || req.method === 'POST') && p === '/api/outputs') {
-      sendJson(res, 200, { ok: true, outputs: scanOutputs(resolveOutBase()) });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/config') {
-      const body = await readBody(req);
-      if (!body) { sendJson(res, 400, { error: 'bad body' }); return; }
-      config = { ...config, ...body };
-      // 版本更新组已改为按构建配置（Profile）单独配置，清理旧的全局配置键
-      delete config.vcsBeforeBuild;
-      saveConfig();
-      sendJson(res, 200, { ok: true, config });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/scan') {
-      const body = await readBody(req) || {};
-      const projectAbs = resolveProject(body.projectPath);
-      if (!isValidProject(projectAbs)) { sendJson(res, 400, { error: '项目路径无效，请检查绝对路径或相对路径（相对路径基于本工具目录）' }); return; }
-      const scan = scanProfiles(projectAbs, body.profileDir);
-      sendJson(res, 200, {
-        ok: true,
-        projectAbs,
-        unityVersion: readUnityVersion(projectAbs),
-        profiles: scan.found,
-        ignored: scan.ignored,
-      });
-      return;
-    }
-
-    if (req.method === 'GET' && p === '/api/unity-detect') {
-      sendJson(res, 200, { exes: findUnityExes(), cli: findUnityCli() });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/cli-probe') {
-      sendJson(res, 200, probeWithUnityCli());
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/cli-open') {
-      const body = await readBody(req) || {};
-      const projectAbs = resolveProject(body.projectPath);
-      const cli = findUnityCli();
-      if (!cli) { sendJson(res, 400, { error: '未找到 unity CLI（%LOCALAPPDATA%\\Unity\\bin\\unity.exe 或 PATH）' }); return; }
-      if (!isValidProject(projectAbs)) { sendJson(res, 400, { error: '项目路径无效' }); return; }
-      const child = spawn(cli, ['open', projectAbs], { cwd: ROOT, windowsHide: true, stdio: 'ignore', detached: true });
-      child.unref();
-      sendJson(res, 200, { ok: true, cli, projectAbs });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/build/preview') {
-      const body = await readBody(req) || {};
-      const projectAbs = resolveProject(body.projectPath);
-      const engine = body.engine || {};
-      const profiles = (body.profiles || []).filter(x => x && x.assetPath);
-      const outBase = body.outputBase ? (path.isAbsolute(body.outputBase) ? body.outputBase : path.join(projectAbs || '', body.outputBase)) : path.join(projectAbs || '', 'Builds');
-      const buildNumberRaw = Number(body.buildNumber);
-      const buildNumberAuto = !Number.isFinite(buildNumberRaw) || buildNumberRaw === -1;
-      const items = profiles.map(pr => {
-        const sign = Object.assign({}, body.sign || {}, pr.sign || {});
-        const customDir = pr.customBuildDir || sign.customBuildDir || null;
-        const resolvedAndroidKind = String(pr.androidBuildKind || sign.androidBuildKind || body.androidBuildKind || 'apk').toLowerCase();
-        const ctx = makeOutputs(pr, outBase, customDir, resolvedAndroidKind);
-        ctx.projectAbs = projectAbs;
-        ctx.sign = sign;
-        ctx.dev = pr.dev != null ? pr.dev : (sign.dev != null ? sign.dev : !!body.dev);
-        ctx.buildAddressables = pr.buildAddressables != null ? pr.buildAddressables : (sign.buildAddressables != null ? sign.buildAddressables : !!body.buildAddressables);
-        ctx.addressablesMethod = pr.addressablesMethod || sign.addressablesMethod || body.addressablesMethod || null;
-        ctx.androidBuildKind = resolvedAndroidKind;
-        ctx.nameTemplate = pr.nameTemplate || sign.nameTemplate || body.artifactNameTemplate || cfg('artifactNameTemplate', '');
-        ctx.autoZip = pr.autoZip != null ? pr.autoZip : (sign.autoZip != null ? sign.autoZip : (body.autoZip != null ? body.autoZip : cfg('defaultAutoZip', true)));
-
-        const buildNo = buildNumberAuto ? ((Number(config.lastVersionCode) || 0) + 1) : buildNumberRaw;
-        if (pr.target === 13) ctx.versionCode = buildNo;
-        ctx.buildNo = buildNo;
-        const cmd = composeCommand(engine, pr, ctx);
-        const previewName = formatArtifactName(ctx.nameTemplate, {
-          Platform: pr.targetName,
-          Target: pr.targetName,
-          Profile: pr.name,
-          Product: pr.productName || pr.name,
-          Version: pr.bundleVersion || '1.0',
-          VersionCode: buildNo,
-          Time: '<时间戳>',
-          Date: '<日期>',
-          Dev: ctx.dev,
-        });
-
-        return {
-          name: pr.name,
-          target: pr.targetName,
-          output: ctx.output,
-          logFile: ctx.logFile,
-          command: cmd.display,
-          versionCode: ctx.versionCode || null,
-          buildNo: buildNo || null,
-          dev: ctx.dev,
-          buildAddressables: ctx.buildAddressables,
-          androidBuildKind: ctx.androidBuildKind,
-          autoZip: ctx.autoZip,
-          customBuildDir: customDir || null,
-          previewName,
-          archiveDir: path.join(outBase, (body.successDir || '').trim() || cfg('successDir', '构建成功'), pr.name + '-<时间戳>'),
-          // 该构建配置单独配置的版本更新组
-          vcsBeforeBuild: (() => {
-            const gids = Array.isArray(pr.vcsGroupIds) ? pr.vcsGroupIds.map(String) : [];
-            const pn = gids.length ? nodeIdsOfGroups(gids) : [];
-            return {
-              enabled: pn.length > 0,
-              groups: groupNamesOf(gids),
-              nodeCount: pn.length,
-              nodeNames: pn.map(n => n.name || n.id),
-            };
-          })(),
-        };
-      });
-      sendJson(res, 200, { ok: true, items, engine });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/build/start') {
-      const body = await readBody(req) || {};
-      const r = await startJob(body);
-      if (!r.ok) { sendJson(res, 400, r); return; }
-      sendJson(res, 200, { ok: true });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/build/stop') {
-      sendJson(res, 200, stopJob());
-      return;
-    }
-
-    // ── 环境编译检测 API ──
-    if (req.method === 'POST' && p === '/api/check/start') {
-      const body = await readBody(req) || {};
-      const r = await startCheck(body);
-      if (!r.ok) { sendJson(res, 400, r); return; }
-      sendJson(res, 200, { ok: true, runDir: r.runDir });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/check/stop') {
-      sendJson(res, 200, stopCheck());
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/check/preview') {
-      const body = await readBody(req) || {};
-      const projectAbs = resolveProject(body.projectPath);
-      const engine = body.engine || {};
-      const raw = (body.targets || []).filter(t => ALLOWED_TARGETS.has(Number(t))).map(Number);
-      const targets = [...new Set(raw)];
-      const timeoutMinutes = Math.max(1, Number(body.timeoutMinutes) || 20);
-      const runDir = path.join(CHECK_RESULTS_DIR, 'check-<时间戳>');
-      const items = targets.map(t => {
-        const files = { json: path.join(runDir, 'target-' + t + '.json'), log: path.join(runDir, 'target-' + t + '.log') };
-        const cmd = composeCheckCommand(engine, projectAbs || '<项目路径>', t, files, timeoutMinutes);
-        return { target: t, name: TARGETS[t] || ('BuildTarget ' + t), command: cmd.display, logFile: files.log };
-      });
-      sendJson(res, 200, { ok: true, items, targets, timeoutMinutes });
-      return;
-    }
-
-    // ── 版本管理 API ──
-    if (req.method === 'GET' && p === '/api/vcs/state') {
-      sendJson(res, 200, { ok: true, vcs: vcsConfig() });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/vcs/save') {
-      const body = await readBody(req) || {};
-      saveVcsConfig({ nodes: body.nodes, groups: body.groups });
-      sendJson(res, 200, { ok: true });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/vcs/probe') {
-      const body = await readBody(req) || {};
-      let nodes = vcsConfig().nodes.slice();
-      if (Array.isArray(body.nodes) && body.nodes.length) {
-        // 临时探测（未保存的节点，用于添加节点弹窗内「检测类型」）
-        nodes = body.nodes.map((n, i) => ({ id: 'adhoc' + i, name: n.name || ('adhoc' + i), path: n.path, branch: n.branch, revert: n.revert, type: n.type || 'auto' }));
-      } else if (Array.isArray(body.ids) && body.ids.length) {
-        const set = new Set(body.ids.map(String));
-        nodes = nodes.filter(n => set.has(String(n.id)));
-      }
-      sendJson(res, 200, { ok: true, results: nodes.map(probeNode) });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/vcs/update') {
-      const body = await readBody(req) || {};
-      const r = await startVcsUpdate(body);
-      if (!r.ok) { sendJson(res, 400, r); return; }
-      sendJson(res, 200, { ok: true });
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/vcs/stop') {
-      sendJson(res, 200, stopVcs());
-      return;
-    }
-
-    if (req.method === 'POST' && p === '/api/ai/analyze') {
-      const body = await readBody(req) || {};
-      const r = await aiAnalyze(body);
-      if (!r.ok) { sendJson(res, 400, r); return; }
-      sendJson(res, 200, r);
-      return;
-    }
-
-    // 打开构建产物所在文件夹（支持直接打开目录、产物文件所在目录或输出根目录）
-    if (req.method === 'POST' && p === '/api/open-folder') {
-      const body = await readBody(req) || {};
-      const target = (body.path || '').trim();
-      try {
-        const projectAbs = resolveProject(cfg('projectPath', '../..')) || path.resolve(ROOT, '..', '..');
-        const outBase = resolveOutBase() || path.join(projectAbs, 'Builds');
-        
-        let abs;
-        if (!target || target === 'Builds' || target === cfg('outputBase', 'Builds')) {
-          abs = outBase;
-        } else if (path.isAbsolute(target)) {
-          abs = path.normalize(target);
-        } else {
-          const inProj = path.join(projectAbs, target);
-          const inOut = path.join(outBase, target);
-          const inTool = path.resolve(ROOT, target);
-          if (fs.existsSync(inProj)) abs = inProj;
-          else if (fs.existsSync(inOut)) abs = inOut;
-          else if (fs.existsSync(inTool)) abs = inTool;
-          else abs = inProj;
-        }
-
-        let folderToOpen = abs;
-        if (!fs.existsSync(folderToOpen)) {
-          try {
-            fs.mkdirSync(folderToOpen, { recursive: true });
-          } catch {
-            const parent = path.dirname(folderToOpen);
-            if (fs.existsSync(parent)) folderToOpen = parent;
-            else if (fs.existsSync(outBase)) folderToOpen = outBase;
-            else if (fs.existsSync(projectAbs)) folderToOpen = projectAbs;
-          }
-        }
-
-        if (fs.existsSync(folderToOpen)) {
-          const st = fs.statSync(folderToOpen);
-          if (!st.isDirectory()) {
-            folderToOpen = path.dirname(folderToOpen);
-          }
-        }
-
-        if (process.platform === 'win32') {
-          const ch = spawn('explorer.exe', [folderToOpen], { stdio: 'ignore', detached: true, windowsHide: false });
-          ch.unref();
-        } else if (process.platform === 'darwin') {
-          spawn('open', [folderToOpen], { stdio: 'ignore', detached: true }).unref();
-        } else {
-          spawn('xdg-open', [folderToOpen], { stdio: 'ignore', detached: true }).unref();
-        }
-        sendJson(res, 200, { ok: true, opened: folderToOpen });
-      } catch (e) {
-        sendJson(res, 400, { error: e.message });
-      }
-      return;
-    }
-
-    // ── SSE ──
-    if (req.method === 'GET' && p === '/api/build/events') {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-      res.write('retry: 3000\n\n');
-      if (job) {
-        res.write('data: ' + JSON.stringify({
-          type: 'hello',
-          job: {
-            state: job.state, index: job.index, count: job.queue.length,
-            queue: job.queue.map(p => ({ name: p.name, targetName: p.targetName, assetPath: p.assetPath })),
-            progress: job.progress || {},
-            end: job.end || null,
-          },
-        }) + '\n\n');
-        const tail = job.lines.slice(-300);
-        for (const l of tail) res.write('data: ' + JSON.stringify({ type: 'line', index: l.i, text: l.t }) + '\n\n');
-      } else {
-        res.write('data: ' + JSON.stringify({ type: 'hello', job: null }) + '\n\n');
-      }
-      if (check) {
-        res.write('data: ' + JSON.stringify({
-          type: 'check-hello',
-          check: {
-            state: check.state, index: check.index, count: check.targets.length,
-            targets: check.targets, results: check.results || {}, end: check.end || null, runDir: check.runDir,
-          },
-        }) + '\n\n');
-        const ctail = check.lines.slice(-300);
-        for (const l of ctail) res.write('data: ' + JSON.stringify({ type: 'check-line', text: l }) + '\n\n');
-      } else {
-        res.write('data: ' + JSON.stringify({ type: 'check-hello', check: null }) + '\n\n');
-      }
-      if (vcs) {
-        res.write('data: ' + JSON.stringify({
-          type: 'vcs-hello',
-          vcs: {
-            state: vcs.state, index: vcs.index, count: vcs.nodes.length,
-            results: vcs.results || {}, end: vcs.end || null,
-          },
-        }) + '\n\n');
-        const vtail = vcs.lines.slice(-300);
-        for (const l of vtail) res.write('data: ' + JSON.stringify({ type: 'vcs-line', text: l }) + '\n\n');
-      } else {
-        res.write('data: ' + JSON.stringify({ type: 'vcs-hello', vcs: null }) + '\n\n');
-      }
-      sseClients.add(res);
-      const iv = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* */ } }, 20000);
-      req.on('close', () => { clearInterval(iv); sseClients.delete(res); });
       return;
     }
 
@@ -2478,7 +2111,6 @@ if (require.main === module) {
     console.log('  关闭窗口即停止服务');
     console.log('====================================================');
     console.log(`TBUILDTOOL_READY=${JSON.stringify({ url: `http://${HOST}:${PORT}` })}`);
-    if (!process.env.ADMIN_TOKEN) console.log(`  管理端: http://${HOST}:${PORT}/admin/?token=${ADMIN_TOKEN}`);
     if (AUTO_OPEN) {
       setTimeout(() => {
         try {
@@ -2492,4 +2124,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { writeZip, scanOutputs, makeOutputs, resolveOutBase, finalizeArtifact, crc32, findArtifact, readBuildInfo, formatArtifactName };
+module.exports = { shouldExcludeFromZip, collectZipFiles, writeZip, scanOutputs, makeOutputs, resolveOutBase, finalizeArtifact, crc32, findArtifact, readBuildInfo, formatArtifactName };

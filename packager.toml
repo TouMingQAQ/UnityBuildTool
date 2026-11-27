@@ -1,0 +1,64 @@
+name = "unitybuildtool-admin"
+productName = "UnityBuildTool"
+version = "0.1.0"
+identifier = "com.unitybuildtool.admin"
+publisher = "unitybuildtool"
+description = "UnityBuildTool 管理端"
+copyright = "Copyright (c) 2026 unitybuildtool"
+formats = ["nsis"]
+outDir = "target/release/bundle/nsis"
+binariesDir = "apps/admin/desktop/target/release"
+beforePackagingCommand = "cargo build --release --manifest-path apps/admin/desktop/Cargo.toml"
+
+[[binaries]]
+path = "unitybuildtool-admin"
+main = true
+
+[nsis]
+installMode = "currentUser"
+languages = ["SimpChinese", "English"]
+installerIcon = "apps/admin/desktop/icons/icon.ico"
+appdataPaths = ["$APPDATA/$IDENTIFIER"]
+preinstallSection = '''
+Section "PreInstall"
+  ; Stop the previous native admin before replacing its install directory.
+  nsExec::ExecToLog 'taskkill /F /IM unitybuildtool-admin.exe'
+  Pop $R0
+  Sleep 300
+
+  ; The old installer stores both values under HKCU. Prefer InstallLocation,
+  ; then fall back to the per-product key written by older versions.
+  ReadRegStr $R1 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\UnityBuildTool" "InstallLocation"
+  StrCmp $R1 "" 0 ubt_have_location
+    ReadRegStr $R1 HKCU "Software\unitybuildtool\UnityBuildTool" ""
+  ubt_have_location:
+  ReadRegStr $R2 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\UnityBuildTool" "UninstallString"
+
+  StrCmp $R1 "" ubt_no_location 0
+    StrCpy $R0 $R1 1
+    StrCmp $R0 '"' 0 +2
+      StrCpy $R1 $R1 -1 1
+    StrCmp $R1 "" ubt_no_location 0
+    StrCpy $INSTDIR $R1
+  ubt_no_location:
+
+  ; A missing old installation is a normal fresh-install path.
+  StrCmp $R2 "" 0 ubt_have_uninstall
+    IfFileExists "$INSTDIR\uninstall.exe" 0 ubt_uninstall_done
+      StrCpy $R2 "$INSTDIR\uninstall.exe"
+  ubt_have_uninstall:
+  StrCmp $R2 "" ubt_uninstall_done 0
+    StrCpy $R0 $R2 1
+    StrCmp $R0 '"' 0 +2
+      StrCpy $R2 $R2 -1 1
+    StrCmp $R2 "" ubt_uninstall_done 0
+    IfFileExists "$R2" 0 ubt_uninstall_done
+      ExecWait '"$R2" /S' $R3
+      Sleep 500
+  ubt_uninstall_done:
+
+  ; The old uninstaller may have removed the key above. Recreate only this
+  ; compatibility value; the Install section writes the remaining metadata.
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\UnityBuildTool" "MainBinaryName" "unitybuildtool-admin.exe"
+SectionEnd
+'''

@@ -93,7 +93,9 @@ fn version_code_source(project: &Path, asset_path: &str) -> PathBuf {
             return p;
         }
     }
-    project.join("ProjectSettings").join("ProjectSettings.asset")
+    project
+        .join("ProjectSettings")
+        .join("ProjectSettings.asset")
 }
 /// 当前 Unity 工程里的 Android 构建号（无则按 0 起算）。
 fn android_base_version_code(project: &Path, asset_path: &str) -> i64 {
@@ -266,8 +268,22 @@ impl Context {
                 ),
                 ("{unityExe}", string(engine, "unityExe")),
                 ("{project}", self.project.to_string_lossy().into_owned()),
-                ("{profilePath}", if is_default_profile(text(p, "assetPath")) { String::new() } else { string(p, "assetPath") }),
-                ("{profileAbs}", if is_default_profile(text(p, "assetPath")) { String::new() } else { string(p, "absPath") }),
+                (
+                    "{profilePath}",
+                    if is_default_profile(text(p, "assetPath")) {
+                        String::new()
+                    } else {
+                        string(p, "assetPath")
+                    },
+                ),
+                (
+                    "{profileAbs}",
+                    if is_default_profile(text(p, "assetPath")) {
+                        String::new()
+                    } else {
+                        string(p, "absPath")
+                    },
+                ),
                 ("{profileName}", string(p, "name")),
                 ("{target}", string(p, "targetName")),
                 ("{output}", self.output.to_string_lossy().into_owned()),
@@ -340,10 +356,7 @@ impl Context {
         if target > 0 {
             args.extend(["-wallpaperTarget".into(), target.to_string()]);
         }
-        args.extend([
-            "-logFile".into(),
-            self.log.to_string_lossy().into_owned(),
-        ]);
+        args.extend(["-logFile".into(), self.log.to_string_lossy().into_owned()]);
         if dev {
             args.extend(["-dev".into(), "true".into()])
         }
@@ -447,15 +460,20 @@ impl ProgressDecoder {
         // Native Unity/Bee output is written directly to the log and may never
         // reach Application.logMessageReceivedThreaded in the Unity plugin.
         static STEPS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let steps = STEPS.get_or_init(|| regex::Regex::new(r"\[(\d+)/(\d+)\s+\d+(?:\.\d+)?s\]").unwrap());
+        let steps =
+            STEPS.get_or_init(|| regex::Regex::new(r"\[(\d+)/(\d+)\s+\d+(?:\.\d+)?s\]").unwrap());
         while let Some(end) = self.pending.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=end).collect();
             let line = String::from_utf8_lossy(&line);
             if let Some((_, payload)) = line.split_once("[TBuildToolProgress] ") {
                 if let Ok(v) = serde_json::from_str::<Value>(payload.trim()) {
-                    if v["version"].as_u64() != Some(1) { continue; }
+                    if v["version"].as_u64() != Some(1) {
+                        continue;
+                    }
                     if let Some(stage) = v["stage"].as_str().filter(|s| !s.trim().is_empty()) {
-                        let pct = v["pct"].as_f64().filter(|p| p.is_finite() && *p >= 0.0)
+                        let pct = v["pct"]
+                            .as_f64()
+                            .filter(|p| p.is_finite() && *p >= 0.0)
                             .map(|p| p.clamp(0.0, 100.0).round() as u64);
                         events.push((stage.to_owned(), pct));
                     }
@@ -470,14 +488,18 @@ impl ProgressDecoder {
             } else if let Some(c) = steps.captures(&line) {
                 if let (Ok(done), Ok(total)) = (c[1].parse::<f64>(), c[2].parse::<f64>()) {
                     if total > 0.0 {
-                        events.push((format!("编译构建步骤 {}/{}", &c[1], &c[2]),
-                            Some((done / total * 100.0).clamp(0.0, 100.0).round() as u64)));
+                        events.push((
+                            format!("编译构建步骤 {}/{}", &c[1], &c[2]),
+                            Some((done / total * 100.0).clamp(0.0, 100.0).round() as u64),
+                        ));
                     }
                 }
             }
         }
         // A malformed/no-newline log must not grow memory indefinitely.
-        if self.pending.len() > 1024 * 1024 { self.pending.clear(); }
+        if self.pending.len() > 1024 * 1024 {
+            self.pending.clear();
+        }
         events
     }
 }
@@ -545,6 +567,8 @@ fn exclude(name: &str, dir: bool, target: i64) -> bool {
             | ".idea"
             | ".vscode"
             | ".ds_store"
+            | "logs"
+            | "check-results"
             | "thumbs.db"
             | "desktop.ini"
             | "ehthumbs.db"
@@ -877,7 +901,10 @@ impl super::Backend {
                         // 自动构建号：自增并写回 Unity 工程里的 AndroidBundleVersionCode。
                         let src = version_code_source(&project, text(pr, "assetPath"));
                         if let Err(e) = write_android_version_code(&src, no) {
-                            self.build_line(index, &format!("[警告] 构建号写回 Unity 工程失败: {e}"));
+                            self.build_line(
+                                index,
+                                &format!("[警告] 构建号写回 Unity 工程失败: {e}"),
+                            );
                         }
                     } else {
                         let mut cfg = self.config();
@@ -1331,11 +1358,13 @@ mod tests {
         let log = "ordinary log\n[TBuildToolProgress] {\"version\":1,\"stage\":\"编译中文\",\"pct\":42.4}\n[TBuildToolProgress] {\"version\":1,\"stage\":\"归档\",\"pct\":-1}\n[TBuildToolProgress] {\"version\":2,\"stage\":\"bad\",\"pct\":100}\n[TBuildToolProgress] broken\n";
         let mut decoder = ProgressDecoder::default();
         let mut events = Vec::new();
-        for byte in log.as_bytes() { events.extend(decoder.push(&[*byte])); }
-        assert_eq!(events, vec![
-            ("编译中文".into(), Some(42)),
-            ("归档".into(), None),
-        ]);
+        for byte in log.as_bytes() {
+            events.extend(decoder.push(&[*byte]));
+        }
+        assert_eq!(
+            events,
+            vec![("编译中文".into(), Some(42)), ("归档".into(), None),]
+        );
     }
 
     #[test]
@@ -1416,17 +1445,24 @@ mod tests {
                     fs::write(&source_info, "previous build").unwrap();
                 }
 
-                let out = backend.archive_build(&ctx, Duration::from_secs(7), 0).unwrap();
+                let out = backend
+                    .archive_build(&ctx, Duration::from_secs(7), 0)
+                    .unwrap();
                 let zip_path = Path::new(out["file"].as_str().unwrap());
                 let mut archive = zip::ZipArchive::new(File::open(zip_path).unwrap()).unwrap();
                 let names: Vec<_> = (0..archive.len())
                     .map(|i| archive.by_index(i).unwrap().name().to_string())
                     .collect();
                 assert_eq!(names, vec!["Game.exe", "Game_Data/data"]);
-                let info = fs::read_to_string(zip_path.parent().unwrap().join("build-info.txt")).unwrap();
+                let info =
+                    fs::read_to_string(zip_path.parent().unwrap().join("build-info.txt")).unwrap();
                 assert!(info.contains("Product: Game\nVersion: 2.0"));
                 assert!(info.contains("Duration: 7s\n"));
-                assert!(info.contains(&format!("Output: {}\nSize: {}\n", zip_path.display(), fs::metadata(zip_path).unwrap().len())));
+                assert!(info.contains(&format!(
+                    "Output: {}\nSize: {}\n",
+                    zip_path.display(),
+                    fs::metadata(zip_path).unwrap().len()
+                )));
                 if stale_info {
                     assert_eq!(fs::read_to_string(source_info).unwrap(), "previous build");
                 } else {
@@ -1479,7 +1515,18 @@ mod tests {
         let root = tempdir().unwrap();
         fs::write(root.path().join("Game.exe"), b"game").unwrap();
         fs::write(root.path().join("build.log"), b"secret log").unwrap();
+        fs::write(root.path().join("process.log"), b"secret process log").unwrap();
+        fs::write(root.path().join("crash.dmp"), b"crash dump").unwrap();
+        fs::write(root.path().join("temporary.tmp"), b"temp").unwrap();
         fs::write(root.path().join("old.apk"), b"nested artifact").unwrap();
+        fs::create_dir_all(root.path().join(".buildtool/check-results/run")).unwrap();
+        fs::write(
+            root.path().join(".buildtool/check-results/run/check.log"),
+            b"check log",
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("logs")).unwrap();
+        fs::write(root.path().join("logs/runtime.txt"), b"text log").unwrap();
         fs::create_dir(
             root.path()
                 .join("BackupThisFolder_butDontShipItWithYourGame"),

@@ -1,10 +1,10 @@
 mod build;
 mod check;
-mod projects;
-mod process_memory;
 mod monitor;
 mod paths;
+mod process_memory;
 mod profile_settings;
+mod projects;
 #[cfg(test)]
 mod tests;
 mod vcs;
@@ -409,7 +409,11 @@ impl Backend {
             }
         };
         // A spawned descendant may retain stdout after its parent exits.
-        self.monitor.pids.lock().unwrap().retain(|pid| *pid != child.id());
+        self.monitor
+            .pids
+            .lock()
+            .unwrap()
+            .retain(|pid| *pid != child.id());
         // Never let an inherited pipe keep the scheduler busy indefinitely.
         let drain_started = Instant::now();
         while readers.iter().any(|r| !r.is_finished())
@@ -593,8 +597,8 @@ impl Backend {
             }
         }
         let mut files = vec![];
-        let project_settings = fs::read_to_string(p.join("ProjectSettings/ProjectSettings.asset"))
-            .unwrap_or_default();
+        let project_settings =
+            fs::read_to_string(p.join("ProjectSettings/ProjectSettings.asset")).unwrap_or_default();
         let custom = valstr(b, "profileDir");
         walk(&p.join("Assets/Settings/Build Profiles"), &mut files);
         if !custom.is_empty() {
@@ -635,9 +639,14 @@ impl Backend {
                         .map(|v| v.trim().trim_matches('"').to_string())
                 })
             };
-            let scene_count = fs::read_to_string(p.join("ProjectSettings/EditorBuildSettings.asset"))
-                .map(|t| t.lines().filter(|l| l.trim_start().starts_with("path:")).count())
-                .unwrap_or(0);
+            let scene_count =
+                fs::read_to_string(p.join("ProjectSettings/EditorBuildSettings.asset"))
+                    .map(|t| {
+                        t.lines()
+                            .filter(|l| l.trim_start().starts_with("path:"))
+                            .count()
+                    })
+                    .unwrap_or(0);
             let settings = profile_settings::read(&ps, &ps);
             let product = valstr(&settings, "productName");
             let name = if product.trim().is_empty() {
@@ -833,7 +842,7 @@ impl Backend {
         Ok(json!({"ok":true}))
     }
     pub fn handle(self: &Arc<Self>, method: &str, path: &str, body: Value) -> Result<Value, Fault> {
-        if self.project_id.is_none() && path != "/api/config" && path != "/api/open-user-page" && path != "/api/monitor" {
+        if self.project_id.is_none() && path != "/api/config" && path != "/api/monitor" {
             let id = self.config()["projects"]
                 .as_array()
                 .and_then(|p| p.first())
@@ -885,6 +894,8 @@ impl Backend {
                 Ok(json!({"ok":true}))
             }
             ("GET", "/api/outputs") => Ok(self.outputs()),
+            ("POST", "/api/profile-settings/read") => self.profile_settings_read(&body),
+            ("POST", "/api/profile-settings/write") => self.profile_settings_write(&body),
             ("GET", "/api/project-paths") => Ok(self.project_paths()),
             ("POST", "/api/project-paths/open") => self.open_project_path(&valstr(&body, "id")),
             ("POST", "/api/application-paths/read") => self.application_paths(&body),
@@ -898,10 +909,14 @@ impl Backend {
                 }
                 let root = crate::http::download::select(&roots, &id)?;
                 let (file, metadata) = crate::http::download::resolve(&root.directory, &relative)?;
-                let directory = if metadata.is_file() { file.parent().unwrap().to_path_buf() } else { file };
+                let directory = if metadata.is_file() {
+                    file.parent().unwrap().to_path_buf()
+                } else {
+                    file
+                };
                 open::that(directory).map_err(|e| (500, e.to_string()))?;
                 Ok(json!({"ok":true}))
-            },
+            }
             ("POST", "/api/check/preview") => self.check_preview(&body),
             ("POST", "/api/check/start") => self.start_check(body),
             ("POST", "/api/ai/analyze") => self.ai_analyze(&body),
@@ -924,24 +939,6 @@ impl Backend {
             ("GET", "/api/vcs/state") => Ok(
                 json!({"ok":true,"vcs":self.config()["vcs"],"nodes":self.config()["vcs"]["nodes"],"groups":self.config()["vcs"]["groups"],"job":self.vcs_job.lock().unwrap().clone()}),
             ),
-            ("POST", "/api/open-user-page") => {
-                let url = valstr(&body, "url");
-                let parsed = url
-                    .parse::<reqwest::Url>()
-                    .map_err(|_| (400, "网页地址无效".into()))?;
-                if parsed.scheme() != "http"
-                    || parsed.host_str() != Some("127.0.0.1")
-                        && parsed.host_str() != self.config()["server"]["host"].as_str()
-                    || parsed.path() != "/" && !parsed.path().starts_with("/p/")
-                    || parsed.query().is_some()
-                    || !parsed.username().is_empty()
-                    || parsed.password().is_some()
-                {
-                    return Err((400, "只能打开本机用户主页".into()));
-                }
-                open::that(url).map_err(|e| (500, e.to_string()))?;
-                Ok(json!({"ok":true}))
-            }
             ("POST", "/api/open-folder") => {
                 let p = self.resolve(&valstr(&body, "path"));
                 let p = if p.is_file() {

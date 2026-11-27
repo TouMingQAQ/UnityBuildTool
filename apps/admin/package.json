@@ -1,15 +1,11 @@
 {
   "name": "unitybuildtool-admin",
-  "version": "0.0.7",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build",
-    "check": "cargo check --manifest-path src-tauri/Cargo.toml",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "tauri": "tauri"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
+    "dev": "cargo run --manifest-path desktop/Cargo.toml",
+    "build": "cargo packager --config ../../packager.toml",
+    "check": "cargo check --manifest-path desktop/Cargo.toml",
+    "test": "cargo test --manifest-path desktop/Cargo.toml"
   }
 }
